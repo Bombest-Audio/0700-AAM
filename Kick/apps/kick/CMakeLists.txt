@@ -140,6 +140,7 @@ target_link_libraries(${TargetName}
         juce::juce_audio_utils
 		contracts
 		ipc
+		gesture
 )
 #add_subdirectory(../../modules ${CMAKE_CURRENT_BINARY_DIR}/kick/modules)
 #add_subdirectory(../../modules ${CMAKE_BINARY_DIR}/modules)

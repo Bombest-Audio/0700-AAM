@@ -36,92 +36,13 @@
 #include <iostream>
 #include <mutex>
 
+#include "panel_paint.h"
+#include "protocol.h"
+
 namespace
 {
-    //==============================================================================
-    // Protocol constants, mirrored from Kick/modules/contracts/dcl/dcl_contracts.h and
-    // ComProtocol/PktMgr/PktMgr.hpp. Kept local so the Surface builds without the Kick tree.
-
-    enum PacketType
-    {
-        PktSystem = 0,
-        PktButton,
-        PktLed,
-        PktPad,
-        PktKnobs,
-        PktMidi,
-        PktCv,
-        PktSlider
-    };
-
-    enum SysCmd
-    {
-        SysResetGd = 0,
-        SysGetSwVer,
-        SysCommInit,
-        SysSwUpdate,
-        SysCheckCommStatus,
-        SysBpm,
-        SysReconnect,
-        SysShutdown
-    };
-
-    enum LedCmd
-    {
-        LedSingle = 0,
-        LedBlink,
-        LedAll
-    };
-
-    enum PadCmd
-    {
-        PadState = 0,
-        PadSetSingle,
-        PadSetAllSingleColour,
-        PadSetAllMultiColour,
-        PadSettings,
-        PadColourMode,
-        PadSetColourState,
-        PadSetAfterTouch,
-        PadSetBlinking,
-        PadSetStepSingle,
-        PadSetStepAll
-    };
-
-    enum SliderCmd
-    {
-        SliderTouch = 0,
-        SliderBar,
-        SliderLevel,
-        SliderIndividual
-    };
-
-    enum PadButtonState
-    {
-        StateOff = 0,
-        StateOn,
-        StateSampleAssigned,
-        StateSampleNotAssigned,
-        StateOnBlink,
-        StateOffBlink
-    };
-
-    constexpr int numPads    = 16;
-    constexpr int numButtons = 53;
-    constexpr int numKnobs   = 16;
-    constexpr int numCv      = 8;
-
-    constexpr int btnShift      = 31;
-    constexpr int btnPlay       = 45;
-    constexpr int btnStop       = 44;
-    constexpr int btnEnter      = 26;
-    constexpr int btnKnobCcw    = 28;
-    constexpr int btnKnobCw     = 30;
-    constexpr int btnBack       = 29;
-    constexpr int colourTrans   = 15;
-    constexpr int knobCenter    = 0;
-    constexpr int knobCmdRotary = 0;
-    constexpr int knobCmdQlink  = 1;
+    using namespace surface_protocol;
+    using surface_paint::drawPot;
 
     const char* const buttonNames[numButtons] = {
         "Bank A", "Bank B", "Bank C", "Bank D", "Bank E", "Bank F", "Bank G", "Bank H",
@@ -236,6 +157,8 @@ namespace
         }
 
         bool isUp() const { return dataFd.load() >= 0 || tcpUp.load(); }
+
+        void send( const Packet& p ) { send( p.type, p.cmd, p.data ); }
 
         void send( int type, int cmd, const std::vector<int>& data )
         {
@@ -505,7 +428,7 @@ namespace
     };
     const Pot panelPots[] = {
         { potMaster, "MASTER", 67, 152, 32 }, { potRec, "REC", 67, 276, 32 },
-        { 1, "P1", 920, 78, 30 }, { 2, "P2", 920, 177, 30 }, { 3, "P3", 920, 276, 30 }, { 4, "P4", 920, 376, 30 },
+        { 1, "P1", 920, 78, 27 }, { 2, "P2", 920, 177, 27 }, { 3, "P3", 920, 276, 27 }, { 4, "P4", 920, 376, 27 },
     };
 
     constexpr float padX0 = 140.6f, padY0 = 502.4f, padW = 99.0f, padH = 95.0f, padDx = 121.7f, padDy = 118.4f;
@@ -663,6 +586,72 @@ namespace
     };
 
     //==============================================================================
+    //==============================================================================
+    /// Sends the events kick-gesture would send to the app's gesture server (127.0.0.1:50501, or KICK_GESTURE_PORT),
+    /// so gestures can be tried with the keyboard or a script and no camera. It speaks the same JUCE
+    /// InterprocessConnection framing: a REGISTER message first, then message_type 500 with the event nested under "event".
+    class GestureInjector : private juce::InterprocessConnection
+    {
+    public:
+        GestureInjector() : juce::InterprocessConnection( true ) {}
+        ~GestureInjector() override { disconnect(); }
+
+        static int port()
+        {
+            const int p = juce::SystemStats::getEnvironmentVariable( "KICK_GESTURE_PORT", "" ).getIntValue();
+            return p > 0 && p < 65536 ? p : 50501;
+        }
+
+        /// Names are the event contract's: swipe_left, swipe_right, palm_hold, fist, pinch_start, pinch_change, pinch_end.
+        /// `value` is the pinch aperture, 0 to 1, and is sent for the pinch events only.
+        bool send( const juce::String& type, float value, float confidence = 0.97f )
+        {
+            if( !ensureConnected() )
+                return false;
+            auto* ev = new juce::DynamicObject();
+            ev->setProperty( "type", type );
+            if( type.startsWith( "pinch_" ) )
+                ev->setProperty( "value", (double)value );
+            ev->setProperty( "hand", "right" );
+            ev->setProperty( "confidence", (double)confidence );
+            ev->setProperty( "t_ms", (juce::int64)juce::Time::getMillisecondCounter() );
+            auto* msg = new juce::DynamicObject();
+            msg->setProperty( "message_id", ++messageId );
+            msg->setProperty( "originator", 500 );
+            msg->setProperty( "message_type", 500 );
+            msg->setProperty( "transaction_type", 30 );
+            msg->setProperty( "event", juce::var( ev ) );
+            return sendJson( juce::var( msg ) );
+        }
+
+    private:
+        bool ensureConnected()
+        {
+            if( isConnected() )
+                return true;
+            if( !connectToSocket( "127.0.0.1", port(), 500 ) )
+                return false;
+            auto* reg = new juce::DynamicObject();
+            reg->setProperty( "message_type", 1 );
+            reg->setProperty( "connection_id", 500 );
+            reg->setProperty( "uuid", "" );
+            reg->setProperty( "connection_name", "kick-surface-gesture" );
+            return sendJson( juce::var( reg ) );
+        }
+
+        bool sendJson( const juce::var& v )
+        {
+            const auto json = juce::JSON::toString( v, true );
+            return sendMessage( juce::MemoryBlock( json.toRawUTF8(), json.getNumBytesAsUTF8() ) );
+        }
+
+        void connectionMade() override {}
+        void connectionLost() override {}
+        void messageReceived( const juce::MemoryBlock& ) override {} // the registration reply, nothing to do
+
+        int messageId{ 0 };
+    };
+
     class Surface : public juce::Component
         , private juce::Timer
     {
@@ -732,7 +721,7 @@ namespace
             if( !juce::isPositiveAndBelow( pad, numPads ) )
                 return;
             pressedPads[(size_t)pad] = true;
-            link.send( PktPad, PadState, { pad, 1, vel, (int)pressure.getValue() - 1 } );
+            link.send( packets::pad( pad, true, vel, (int)pressure.getValue() - 1 ) );
             logLine( "TX pad " + juce::String( pad ) + " down vel " + juce::String( vel ) );
         }
 
@@ -741,7 +730,7 @@ namespace
             if( !juce::isPositiveAndBelow( pad, numPads ) )
                 return;
             pressedPads[(size_t)pad] = false;
-            link.send( PktPad, PadState, { pad, 0, 0, 0 } );
+            link.send( packets::pad( pad, false, 0, 0 ) );
             logLine( "TX pad " + juce::String( pad ) + " up" );
         }
 
@@ -750,7 +739,7 @@ namespace
             if( !juce::isPositiveAndBelow( id, numButtons ) )
                 return;
             pressedButtons[(size_t)id] = true;
-            link.send( PktButton, 0, { id, 1 } );
+            link.send( packets::button( id, true ) );
             logLine( "TX button " + juce::String( buttonNames[id] ) + " down" );
         }
 
@@ -759,7 +748,7 @@ namespace
             if( !juce::isPositiveAndBelow( id, numButtons ) )
                 return;
             pressedButtons[(size_t)id] = false;
-            link.send( PktButton, 0, { id, 0 } );
+            link.send( packets::button( id, false ) );
             logLine( "TX button " + juce::String( buttonNames[id] ) + " up" );
         }
 
@@ -768,21 +757,20 @@ namespace
         {
             if( steps == 0 || !juce::isPositiveAndBelow( knob, numKnobs + 1 ) )
                 return;
-            link.send( PktKnobs, knob == knobCenter ? knobCmdRotary : knobCmdQlink, { knob, steps > 0 ? 1 : 0, std::abs( steps ) } );
+            link.send( packets::knob( knob, steps ) );
             logLine( "TX knob " + juce::String( knob ) + " " + juce::String( steps ) );
         }
 
         void setStrip( int percent )
         {
             stripValue = juce::jlimit( 0, 100, percent );
-            link.send( PktSlider, SliderTouch, { stripValue } );
+            link.send( packets::strip( stripValue ) );
             logLine( "TX strip " + juce::String( stripValue ) );
         }
 
         void releaseStrip()
         {
-            // The strip reports 0 when the finger lifts, which is how the app ends a touch.
-            link.send( PktSlider, SliderTouch, { 0 } );
+            link.send( packets::strip( 0 ) );
         }
 
         void setMedia()
@@ -847,19 +835,6 @@ namespace
         int   panelSide() const { return getHeight(); }
 
         //==============================================================================
-        static void drawPot( juce::Graphics& g, float cx, float cy, float r, float angle )
-        {
-            g.setColour( juce::Colours::black.withAlpha( 0.6f ) );
-            g.fillEllipse( cx - r - 3, cy - r - 1, ( r + 3 ) * 2, ( r + 3 ) * 2 );
-            juce::ColourGradient body( juce::Colour( 0xff3c3f47 ), cx - r * 0.5f, cy - r * 0.6f, juce::Colour( 0xff0e0f12 ), cx + r * 0.6f, cy + r * 0.7f, false );
-            g.setGradientFill( body );
-            g.fillEllipse( cx - r, cy - r, r * 2, r * 2 );
-            g.setColour( juce::Colour( 0xff555966 ) );
-            g.drawEllipse( cx - r, cy - r, r * 2, r * 2, 1.2f );
-            g.setColour( juce::Colour( 0xffe8eaf0 ) );
-            g.drawLine( cx + std::sin( angle ) * r * 0.25f, cy - std::cos( angle ) * r * 0.25f, cx + std::sin( angle ) * r * 0.92f, cy - std::cos( angle ) * r * 0.92f, 3.0f );
-        }
-
         bool ledLit( int id, bool phase ) const
         {
             if( !juce::isPositiveAndBelow( id, numButtons ) )
@@ -927,6 +902,9 @@ namespace
                 if( pot.knob >= 100 )
                 {
                     g.drawText( pot.label, (int)pot.cx - 40, (int)( pot.cy - pot.r - 28 ), 80, 14, juce::Justification::centred );
+                    // End-stop dots at 7 and 5 o'clock, as printed on the unit
+                    for( const float a : { -2.36f, 2.36f } )
+                        g.fillEllipse( pot.cx + std::sin( a ) * ( pot.r + 7 ) - 1.5f, pot.cy - std::cos( a ) * ( pot.r + 7 ) - 1.5f, 3.0f, 3.0f );
                     g.setFont( 9.0f );
                     g.drawText( "MIN", (int)pot.cx - 44, (int)( pot.cy + pot.r + 12 ), 40, 12, juce::Justification::centred );
                     g.drawText( "MAX", (int)pot.cx + 4, (int)( pot.cy + pot.r + 12 ), 40, 12, juce::Justification::centred );
@@ -1021,18 +999,31 @@ namespace
                 g.setColour( Colour( 0xff2a2c33 ) );
                 g.drawRoundedRectangle( jogBox, 22, 1.5f );
                 const bool live = model.appLive;
-                for( int i = 0; i < 32; ++i )
-                {
-                    const float a = (float)i / 32.0f * juce::MathConstants<float>::twoPi;
-                    const float x = jogCentre.x + std::sin( a ) * ( jogR + 8 ), y = jogCentre.y - std::cos( a ) * ( jogR + 8 );
-                    g.setColour( live ? Colour( 0xffff2a2a ) : Colour( 0xff3a1c1c ) );
-                    g.fillEllipse( x - 2.2f, y - 2.2f, 4.4f, 4.4f );
-                }
-                drawPot( g, jogCentre.x, jogCentre.y, jogR - 6, knobAngle[0] );
+                const auto disc = [&]( float rad ) { return juce::Rectangle<float>( rad * 2, rad * 2 ).withCentre( jogCentre ); };
+
+                // Glossy collar the knob sits in
+                g.setGradientFill( juce::ColourGradient( Colour( 0xff3a3d44 ), jogCentre.x - jogR, jogCentre.y - jogR, Colour( 0xff050506 ),
+                                                         jogCentre.x + jogR * 0.6f, jogCentre.y + jogR, false ) );
+                g.fillEllipse( disc( jogR + 12 ) );
+                g.setColour( Colour( 0xff050506 ) );
+                g.fillEllipse( disc( jogR + 2 ) );
+
+                // Solid LED ring, with a glow while the app is live
+                const Colour ring = live ? Colour( 0xffff3344 ) : Colour( 0xff3a1c1f );
+                if( live )
+                    for( const float w : { 9.0f, 6.0f } )
+                    {
+                        g.setColour( ring.withAlpha( w > 8 ? 0.12f : 0.25f ) );
+                        g.drawEllipse( disc( jogR - 3 ), w );
+                    }
+                g.setColour( ring );
+                g.drawEllipse( disc( jogR - 3 ), 3.0f );
+
+                drawPot( g, jogCentre.x, jogCentre.y, jogR - 9, knobAngle[0], 8, false );
                 if( pressedButtons[btnEnter] )
                 {
                     g.setColour( juce::Colours::white.withAlpha( 0.2f ) );
-                    g.fillEllipse( jogCentre.x - jogR + 6, jogCentre.y - jogR + 6, ( jogR - 6 ) * 2, ( jogR - 6 ) * 2 );
+                    g.fillEllipse( disc( jogR - 9 ) );
                 }
             }
 
@@ -1128,7 +1119,7 @@ namespace
 
             g.setColour( juce::Colours::lightgrey );
             g.setFont( 11.0f );
-            g.drawText( "P1-P4 send knobs", x0, 84, w, 14, juce::Justification::centredLeft );
+            g.drawText( "P1-P4 send knobs. Hold G + 1-7: gestures", x0, 84, w, 14, juce::Justification::centredLeft );
             g.setColour( juce::Colours::grey );
             g.drawText( "velocity", velocity.getX(), velocity.getY() - 14, 80, 14, juce::Justification::left );
             g.drawText( "pad pressure byte", pressure.getX(), pressure.getY() - 14, 140, 14, juce::Justification::left );
@@ -1154,7 +1145,7 @@ namespace
 
             g.setColour( juce::Colours::grey );
             g.setFont( 10.5f );
-            g.drawFittedText( "Camera: Kick has no camera code yet, so the module on the panel is a stand-in.", x0, 422, w, 28, juce::Justification::centredLeft, 2 );
+            g.drawFittedText( "Camera: the module on the panel is a stand-in. The app follows kick-camera over its control socket.", x0, 422, w, 28, juce::Justification::centredLeft, 2 );
 
             auto r = juce::Rectangle<int>( x0, 456, w, getHeight() - 466 );
             g.setColour( juce::Colour( 0xff0c0d10 ) );
@@ -1205,9 +1196,12 @@ namespace
         {
             drawerOpen = open;
             devButton.setButtonText( open ? "hide" : "dev" );
-            setSize( open ? getHeight() + drawerWidth : getHeight(), getHeight() );
+            setSize( widthForHeight( getHeight() ), getHeight() );
             resized();
         }
+
+        /// The panel is square and scales with the height; the drawer beside it keeps a fixed width.
+        int widthForHeight( int h ) const { return h + ( drawerOpen ? drawerWidth : 0 ); }
 
         //==============================================================================
         bool shiftHeld() const { return pressedButtons[btnShift]; }
@@ -1356,6 +1350,10 @@ namespace
             for( auto& pot : panelPots )
                 if( p.getDistanceFrom( { pot.cx, pot.cy } ) <= pot.r + 6 )
                     knob = pot.knob < 100 ? pageBase + pot.knob : pot.knob;
+            // Trackpad momentum keeps scrolling after the fingers lift, so a flick would keep turning the knob
+            // by an amount that depends on how fast it was. Only the fingers' own movement counts.
+            if( w.isInertial )
+                return;
             wheelAccum += w.deltaY * ( w.isReversed ? -1.0f : 1.0f ) * 8.0f;
             const int steps = (int)wheelAccum;
             if( steps != 0 )
@@ -1370,9 +1368,45 @@ namespace
         bool keyStateChanged( bool ) override
         {
             static const juce::String padKeys = "zxcvasdfqwer1234"; // pad 1 is bottom left, like the hardware
+
+            // Hold G for gesture keys: 1 swipe left, 2 swipe right, 3 open palm, 4 fist, 5 pinch start, 6 pinch change,
+            // 7 pinch end. Left and right then move the pinch aperture instead of turning the encoder. The digits
+            // 1 to 4 are pad keys, so they are not pads while G is held.
+            const bool gestureMode = juce::KeyPress::isKeyCurrentlyDown( 'G' );
+            {
+                static const char* const gestureNames[7] = { "swipe_left", "swipe_right", "palm_hold", "fist", "pinch_start", "pinch_change", "pinch_end" };
+                for( int i = 0; i < 7; ++i )
+                {
+                    const bool down = gestureMode && juce::KeyPress::isKeyCurrentlyDown( (int)'1' + i );
+                    if( down && !gestureKeyHeld[(size_t)i] )
+                    {
+                        if( i == 4 )
+                        {
+                            pinching = true;
+                            pinchValue = 0.5f;
+                        }
+                        sendGesture( gestureNames[i], pinchValue );
+                        if( i == 6 )
+                            pinching = false;
+                    }
+                    gestureKeyHeld[(size_t)i] = down;
+                }
+                const bool left  = gestureMode && juce::KeyPress::isKeyCurrentlyDown( juce::KeyPress::leftKey );
+                const bool right = gestureMode && juce::KeyPress::isKeyCurrentlyDown( juce::KeyPress::rightKey );
+                if( ( left && !gestureLeftHeld ) || ( right && !gestureRightHeld ) )
+                {
+                    pinchValue = juce::jlimit( 0.f, 1.f, pinchValue + ( right ? 0.1f : -0.1f ) );
+                    if( pinching )
+                        sendGesture( "pinch_change", pinchValue );
+                }
+                gestureLeftHeld  = left;
+                gestureRightHeld = right;
+            }
+
             for( int i = 0; i < numPads; ++i )
             {
-                const bool down = juce::KeyPress::isKeyCurrentlyDown( padKeys[i] );
+                const bool isDigit = padKeys[i] >= '1' && padKeys[i] <= '4';
+                const bool down = !( gestureMode && isDigit ) && juce::KeyPress::isKeyCurrentlyDown( padKeys[i] );
                 if( down && !pressedPads[(size_t)i] ) padDown( i, (int)velocity.getValue() );
                 if( !down && pressedPads[(size_t)i] && activePad != i ) padUp( i );
             }
@@ -1383,7 +1417,8 @@ namespace
                 { juce::KeyPress::escapeKey, btnBack }, { juce::KeyPress::tabKey, btnStop } };
             for( auto& m : maps )
             {
-                const bool down = juce::KeyPress::isKeyCurrentlyDown( m.key );
+                const bool arrow = m.key == juce::KeyPress::leftKey || m.key == juce::KeyPress::rightKey;
+                const bool down = !( gestureMode && arrow ) && juce::KeyPress::isKeyCurrentlyDown( m.key );
                 if( down && !pressedButtons[(size_t)m.button] ) buttonDown( m.button );
                 if( !down && pressedButtons[(size_t)m.button] && activeButton != m.button ) buttonUp( m.button );
             }
@@ -1401,6 +1436,16 @@ namespace
         }
 
         //==============================================================================
+        /// Sends one gesture to the app. `value` is the pinch aperture for the pinch events.
+        bool sendGesture( const juce::String& type, float value )
+        {
+            const bool ok = gestures.send( type, value );
+            logLine( juce::String( ok ? "TX gesture " : "gesture not sent (no app gesture server) " ) + type );
+            return ok;
+        }
+
+        float pinchAperture() const { return pinchValue; }
+
         juce::String lastLog() const { return logLines.empty() ? juce::String() : logLines.back(); }
 
         void nudgeKnob( int knob, int steps )
@@ -1415,11 +1460,10 @@ namespace
             if( !juce::isPositiveAndBelow( knob, numKnobs + 1 ) )
                 return;
             auto& angle = knobAngle[(size_t)knob];
-            angle += (float)steps * ( knob == knobCenter ? 0.25f : 0.1f );
-            // Q-Link knobs are endless encoders but read like pots on screen: stop at +-135 degrees.
-            // The centre encoder is a free-spinning dial.
-            if( knob != knobCenter )
-                angle = juce::jlimit( -2.356f, 2.356f, angle );
+            // The Q-Link knobs and the centre encoder are endless: the unit sends relative steps and the app owns
+            // the value (a velocity of 0-127, a ratchet of 1-8 and so on, depending on the screen), so there is no
+            // stop to draw. Only the analog MASTER and REC pots above have one.
+            angle = std::fmod( angle + (float)steps * ( knob == knobCenter ? 0.25f : 0.1f ), juce::MathConstants<float>::twoPi );
             turnKnob( knob, steps );
         }
 
@@ -1437,7 +1481,7 @@ namespace
                 if( live && ++heartbeatTicks >= 90 )
                 {
                     heartbeatTicks = 0;
-                    link.send( PktSystem, SysCheckCommStatus, { 2 } );
+                    link.send( packets::commStatus( 2 ) );
                 }
             }
             repaint();
@@ -1472,11 +1516,11 @@ namespace
                         if( d( 0 ) == 1 )
                         {
                             model.appLive = false;
-                            link.send( PktSystem, SysGetSwVer, { 1, 0 } );
-                            link.send( PktSystem, SysCheckCommStatus, { 1 } );
+                            link.send( packets::softwareVersion() );
+                            link.send( packets::commStatus( 1 ) );
                         }
                         else
-                            link.send( PktSystem, SysCheckCommStatus, { 2 } );
+                            link.send( packets::commStatus( 2 ) );
                     }
                     else if( f.cmd == SysCheckCommStatus && d( 0 ) == 2 )
                         model.appLive = true;
@@ -1579,6 +1623,11 @@ namespace
         float                        lastDragY{ 0 }, dragAccum{ 0 }, wheelAccum{ 0 };
         int                          heartbeatTicks{ 0 };
         std::deque<juce::String>     logLines;
+        GestureInjector              gestures;
+        std::array<bool, 7>          gestureKeyHeld{};
+        bool                         gestureLeftHeld{ false }, gestureRightHeld{ false };
+        bool                         pinching{ false };
+        float                        pinchValue{ 0.5f };
 
     };
 
@@ -1631,6 +1680,9 @@ namespace
     ///   sd in|out    usb in|out        snapshot <file.png>
     ///   expect connected               expect pad <1-16> <colourId|off>
     ///   expect led <name> on|off       expect cv <1-8> <minVolts>   quit [code]
+    ///   gesture <name> [value]         send a kick-gesture event to the app's gesture server
+    ///                                  (swipe_left swipe_right palm_hold fist pinch_start pinch_change pinch_end;
+    ///                                  value is the pinch aperture 0-1, default 0.5)
     class ScriptRunner : private juce::Thread
     {
     public:
@@ -1747,6 +1799,15 @@ namespace
                     onMain( [=] { surface.buttonDown( id ); } );
                     juce::Thread::sleep( hold );
                     onMain( [=] { surface.buttonUp( id ); } );
+                }
+                else if( cmd == "gesture" )
+                {
+                    const juce::String name  = t[1];
+                    const float        value = t.size() > 2 ? t[2].getFloatValue() : 0.5f;
+                    auto               sent  = std::make_shared<std::atomic<bool>>( false );
+                    onMain( [=] { *sent = surface.sendGesture( name, value ); } );
+                    if( !*sent )
+                        return fail( "could not reach the app's gesture server (is Kick running, and KICK_GESTURE_PORT right?)" );
                 }
                 else if( cmd == "knob" )
                     onMain( [=] { surface.nudgeKnob( t[1].getIntValue(), t[2].getIntValue() ); } );
@@ -1946,15 +2007,56 @@ namespace
             {
                 setContentOwned( content, true );
                 setUsingNativeTitleBar( true );
+
+                // Start at the default size, or smaller when the screen's free area (menu bar and dock
+                // excluded) cannot hold it. The title bar is outside the bounds with a native title bar,
+                // so leave room for it.
+                constrainer.surface = content;
+                constrainer.setMinimumSize( content->widthForHeight( minHeight ), minHeight );
+                setConstrainer( &constrainer );
+                setResizable( true, false );
+                int h = content->getHeight();
+                if( auto* display = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay() )
+                    h = juce::jlimit( minHeight, h, display->userArea.getHeight() - titleBarAllowance );
+                content->setSize( content->widthForHeight( h ), h );
                 centreWithSize( content->getWidth(), content->getHeight() );
                 setVisible( true );
             }
+
+            ~Window() override { setConstrainer( nullptr ); }
 
             void closeButtonPressed() override { juce::JUCEApplication::getInstance()->systemRequestedQuit(); }
             Surface& surface() { return *content; }
 
         private:
-            Surface* content;
+            /// Keeps the window at the Surface's shape while it is resized: dragging a side edge sets the
+            /// height from the new width, anything else sets the width from the new height.
+            struct Constrainer : juce::ComponentBoundsConstrainer
+            {
+                Surface* surface = nullptr;
+
+                void checkBounds( juce::Rectangle<int>& bounds, const juce::Rectangle<int>& previous, const juce::Rectangle<int>& limits,
+                                  bool isStretchingTop, bool isStretchingLeft, bool isStretchingBottom, bool isStretchingRight ) override
+                {
+                    const int extra = surface->widthForHeight( 0 );
+                    if( ( isStretchingLeft || isStretchingRight ) && !isStretchingTop && !isStretchingBottom )
+                        bounds.setHeight( bounds.getWidth() - extra );
+                    bounds.setHeight( juce::jmax( getMinimumHeight(), bounds.getHeight() ) );
+                    if( !limits.isEmpty() )
+                        bounds.setHeight( juce::jmin( bounds.getHeight(), limits.getHeight() ) );
+                    bounds.setWidth( surface->widthForHeight( bounds.getHeight() ) );
+                    if( isStretchingLeft )
+                        bounds.setX( previous.getRight() - bounds.getWidth() );
+                    if( isStretchingTop )
+                        bounds.setY( previous.getBottom() - bounds.getHeight() );
+                }
+            };
+
+            static constexpr int minHeight         = 560;
+            static constexpr int titleBarAllowance = 32;
+
+            Surface*    content;
+            Constrainer constrainer;
         };
 
         juce::File                     root;

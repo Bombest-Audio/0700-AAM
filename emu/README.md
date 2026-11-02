@@ -28,6 +28,8 @@ emu/build.sh            # Kick + Surface into build/emu and build/surface
 emu/run.sh              # opens both windows
 emu/run.sh --root DIR   # device root, default ~/KickEmu
 emu/run.sh --script emu/tests/smoke.script   # headless run, exit code = result
+python3 emu/tests/touch.py                    # touchscreen regression test (dialogs, file browser, double tap)
+python3 emu/tests/protocol_drift.py             # fails when the Surface's protocol.h drifts from Kick's contracts
 ```
 
 Needs Xcode, cmake, ninja, python3. On Windows, `emu\build.ps1` uses the CMake and Ninja that ship with Visual Studio 2022 (C++ workload) and `emu\run.ps1` takes `-Script`, `-Root` and `-Port`; clone with `core.autocrlf=false` so the JUCE patch applies. Demo samples need Python 3 on Windows (`winget install Python.Python.3.12`), otherwise they are skipped. The first build fetches JUCE 7.0.12 and other deps through CPM and applies `emu/patches/juce_7.0.12_macos15_sdk.patch`.
@@ -51,13 +53,15 @@ Everything Kick expects at a Linux path lives under `KICK_EMU_ROOT`:
 
 ## Surface
 
-Mouse: click pads and buttons, drag knobs, drag or scroll the jog wheel (click it for Enter), drag the touch strip, and touch Kick's screen in the bezel. The dev drawer (the `dev` button) holds the velocity and pressure sliders, the SD and USB toggles, the CV meters and the packet log.
+Mouse: click pads and buttons, drag knobs, drag or scroll the jog wheel (click it for Enter), drag the touch strip, and touch Kick's screen in the bezel. The dev drawer (the `dev` button) holds the velocity and pressure sliders, the SD and USB toggles, the CV meters and the packet log. The window opens at full size, or smaller when the screen's free area (menu bar and dock excluded) cannot hold it, and resizes from any edge or corner while keeping the panel square.
 
-Dual-legend keys (BANK A / E, MAIN / GRID and so on) send the printed primary id, and the second legend while Shift is held. Clicking SHIFT latches it. This is an assumption about how the unit's MCU sends the shifted layer, so check it against hardware before relying on it. The unit has only four Q-Link knobs, P1 to P4, so they send knobs 1-4 and the drawer's page buttons move them to 5-8, 9-12 or 13-16. MASTER and REC are analog on the unit and only turn on screen.
+Dual-legend keys (BANK A / E, MAIN / GRID and so on) send the printed primary id, and the second legend while Shift is held. Clicking SHIFT latches it. This is an assumption about how the unit's MCU sends the shifted layer, so check it against hardware before relying on it. The unit has only four Q-Link knobs, P1 to P4, so they send knobs 1-4 and the drawer's page buttons move them to 5-8, 9-12 or 13-16. MASTER and REC are analog on the unit and only turn on screen. P1 to P4 are endless encoders that send relative steps, so they have no min or max of their own: the screen in Kick that has the focus decides what a step does (the step sequencer, for one, adds it to a step's velocity of 0-127, probability of 0-100 or ratchet of 1-8). They spin freely on screen, and a trackpad flick counts only while the fingers move.
 
 Keyboard: pads `z x c v / a s d f / q w e r / 1 2 3 4` (bottom row first), space = Play, return = Enter, arrows = Knob CCW/CW, esc = Back, tab = Stop, shift = Shift, up/down = encoder.
 
-Script commands (`--script`, `#` comments): `wait ms`, `pad 1-16 [vel] [holdMs]`, `button name|id [holdMs]`, `knob 0|1-16 steps` (negative = CCW), `slider 0-100` (the strip is vertical), `sd in|out`, `usb in|out`, `snapshot file.png`, `expect connected`, `expect pad n colourId|off`, `expect led name on|off`, `expect cv ch minVolts`, `quit [code]`.
+Hold G and press 1 to 7 to send a gesture (1 swipe left, 2 swipe right, 3 open palm, 4 fist, 5 pinch start, 6 pinch change, 7 pinch end). Left and right arrows then move the pinch aperture. See "Gestures".
+
+Script commands (`--script`, `#` comments): `wait ms`, `gesture name [value]`, `pad 1-16 [vel] [holdMs]`, `button name|id [holdMs]`, `knob 0|1-16 steps` (negative = CCW), `slider 0-100` (the strip is vertical), `sd in|out`, `usb in|out`, `snapshot file.png`, `expect connected`, `expect pad n colourId|off`, `expect led name on|off`, `expect cv ch minVolts`, `quit [code]`.
 
 ## Control socket
 
@@ -72,13 +76,26 @@ down|move|up <x> <y>  (live pointer, used for the bezel; a leading ! suppresses 
 quit
 ```
 
-The socket is localhost only. A first line that is not a known command closes the connection, which stops browser cross-protocol requests from reaching later lines.
+The socket is localhost only and serves each connection on its own thread, so scripts and tools work while the Surface keeps its bezel connection open. A first line that is not a known command closes the connection, which stops browser cross-protocol requests from reaching later lines.
 
-Taps go straight to the component under the point. Injecting through the window peer fails on macOS unless the window is topmost.
+Taps go through Kick's window peer as mouse events, the same path as real input, so mouse listeners, click-to-focus, modal dialogs and double taps work. Scripted taps carry their intended timestamps: JUCE treats a press longer than 300 ms as a drag, so a busy message thread must not stretch a tap. JUCE on macOS has no touch input sources and drops touch events, which is why they go in as mouse events.
+
+On the unit Kick's window is the only one and always has focus. Here it is minimised behind the Surface, which JUCE reads as hidden and unfocused. Left alone, dialogs open as separate invisible windows and no control ever takes keyboard focus, so the encoder and knobs have nothing to talk to. `emu/patches/juce_7.0.12_emu_kiosk.patch` (applied for `KICK_EMU` builds on every host) makes the minimised window count as showing and focused, keeps focus when the OS window loses it, parents dialogs to the first window when none is active, and stops `Component::contains()` asking the OS which window is on top.
 
 Kick also streams its window to the Surface on TCP `50903` (`KICK_EMU_FRAME_PORT`, `KICK_EMU_FRAME_FPS` default 30) and minimises its own window; `KICK_EMU_SHOW_WINDOW=1` keeps it visible.
 
 The Surface listens on UDP `50902` (`KICK_EMU_EVENT_PORT`) for `cv ch raw volts`, `backlight N`, `power reboot|off`, `app started|stopped`.
+
+## Gestures
+
+The app listens for kick-gesture on `127.0.0.1:50501` (`KICK_GESTURE_PORT`). The Surface can send the same events, so gesture control runs in the emulator with no camera and no model. How the app maps them is in `docs/gestures.md`.
+
+- Gestures are off in the app until the Camera page in Preferences turns them on. `KICK_EMU_GESTURES=1` turns them on for a run instead.
+- `emu/run.sh --gesture` also builds `kick-gesture` without the ONNX backend and replays a synthetic hand stream (`kick-gesture-synth demo`) into the app in real time, over and over. That is the real service and the real IPC path.
+- `emu/tests/run-gesture-test.sh` runs `gesture.script` with gestures on, checks the bank LEDs and the app log, then runs `gesture-off.script` to prove a swipe does nothing while gestures are off. About two minutes.
+- `emu/tests/run-gesture-ipc-test.sh` is a JUCE console test, without the UI, of the service's sink against the app's real IPC server. It is not part of `emu/build.sh`.
+
+Bank LEDs are the only gesture result the Surface shows. In this build selecting a bank lights its LED but does not turn the previous one off, so a script can only check that a bank turned on.
 
 ## Serial protocol
 
@@ -90,7 +107,7 @@ Types: SYSTEM 0, BUTTON 1, LED 2, PAD 3, KNOBS 4, MIDI 5, CV 6, SLIDER 7. Handsh
 
 - The stand-in modules are written from how Kick calls them, not from the closed originals. `AudIO_constants` values are guesses sized to work.
 - Audio uses the default CoreAudio output at 48 kHz, 256 frames.
-- The camera is a placeholder on the panel. Kick has no camera code.
+- The camera is a placeholder on the panel. The app follows kick-camera on its control socket, and gestures arrive from the Surface keys or a replayed stream (see "Gestures"), not from a camera.
 - Linux and Windows audio use the host's default device. The Docker run has none, so it only proves boot and the UI.
 - Pad aftertouch is sent but the app ignores it.
 - Pad LEDs only light when the app sets them (some modes need a loaded program).
