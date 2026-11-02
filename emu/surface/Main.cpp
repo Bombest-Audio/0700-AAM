@@ -834,7 +834,10 @@ namespace
         {
             if( steps == 0 || !juce::isPositiveAndBelow( knob, numKnobs + 1 ) )
                 return;
-            link.send( PktKnobs, knob == knobCenter ? knobCmdRotary : knobCmdQlink, { knob, steps > 0 ? 1 : 0, std::abs( steps ) } );
+            // One packet carries the whole burst. Some screens act once per packet (the step sequencer flips a step's
+            // selection on every one), so splitting a burst into single steps would change what the app does. The
+            // count is a signed byte in the unit's simulator, so cap it there.
+            link.send( PktKnobs, knob == knobCenter ? knobCmdRotary : knobCmdQlink, { knob, steps > 0 ? 1 : 0, juce::jmin( 127, std::abs( steps ) ) } );
             logLine( "TX knob " + juce::String( knob ) + " " + juce::String( steps ) );
         }
 
@@ -1488,6 +1491,10 @@ namespace
             for( auto& pot : panelPots )
                 if( p.getDistanceFrom( { pot.cx, pot.cy } ) <= pot.r + 6 )
                     knob = pot.knob < 100 ? pageBase + pot.knob : pot.knob;
+            // Trackpad momentum keeps scrolling after the fingers lift, so a flick would keep turning the knob
+            // by an amount that depends on how fast it was. Only the fingers' own movement counts.
+            if( w.isInertial )
+                return;
             wheelAccum += w.deltaY * ( w.isReversed ? -1.0f : 1.0f ) * 8.0f;
             const int steps = (int)wheelAccum;
             if( steps != 0 )
@@ -1594,11 +1601,10 @@ namespace
             if( !juce::isPositiveAndBelow( knob, numKnobs + 1 ) )
                 return;
             auto& angle = knobAngle[(size_t)knob];
-            angle += (float)steps * ( knob == knobCenter ? 0.25f : 0.1f );
-            // Q-Link knobs are endless encoders but read like pots on screen: stop at +-135 degrees.
-            // The centre encoder is a free-spinning dial.
-            if( knob != knobCenter )
-                angle = juce::jlimit( -2.356f, 2.356f, angle );
+            // The Q-Link knobs and the centre encoder are endless: the unit sends relative steps and the app owns
+            // the value (a velocity of 0-127, a ratchet of 1-8 and so on, depending on the screen), so there is no
+            // stop to draw. Only the analog MASTER and REC pots above have one.
+            angle = std::fmod( angle + (float)steps * ( knob == knobCenter ? 0.25f : 0.1f ), juce::MathConstants<float>::twoPi );
             turnKnob( knob, steps );
         }
 
