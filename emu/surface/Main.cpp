@@ -15,6 +15,9 @@
  *   KickSurface [--root <dir>] [--tcp <port>] [--script <file>] [--no-window-focus]
  *   The tty path is printed as "KICK_SERIAL_PORT=<path>" and linked at <root>/dev/ttymxc0.
  *
+ * Environment:
+ *   KICK_EMU_TRACE=<file>  write every byte on the serial line to <file> (see the Trace class).
+ *
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 
@@ -31,6 +34,7 @@
 
 #include <array>
 #include <atomic>
+#include <cstdio>
 #include <deque>
 #include <functional>
 #include <iostream>
@@ -102,6 +106,80 @@ namespace
     }
 
     //==============================================================================
+    /// Optional record of the serial line, enabled by KICK_EMU_TRACE=<file>. Firmware tests replay
+    /// it (Firmware/kick-mcu/tests), so the format is a contract; change it there too.
+    ///
+    ///   # kick-emu-trace v1
+    ///   <ms> TX <hex>      one frame this app sent to Kick, the exact bytes written (trailer included)
+    ///   <ms> RX <hex>      one read() from Kick, the bytes as they arrived (reads can hold several frames)
+    ///   <ms> DEC t<type> d<dir> c<cmd> [<byte> ...]
+    ///                      a frame this app decoded from RX with a good CRC, in the order it decoded it
+    ///
+    /// <ms> is milliseconds since the trace was opened, three decimals. Hex is lower-case, two digits
+    /// per byte, separated by single spaces. Each line is flushed as it is written.
+    class Trace
+    {
+    public:
+        ~Trace() { close(); }
+
+        bool open( const juce::String& path )
+        {
+            std::lock_guard<std::mutex> g( lock );
+            if( file != nullptr )
+                return true;
+            file = std::fopen( path.toRawUTF8(), "w" );
+            if( file == nullptr )
+                return false;
+            startMs = juce::Time::getMillisecondCounterHiRes();
+            std::fputs( "# kick-emu-trace v1\n", file );
+            std::fflush( file );
+            return true;
+        }
+
+        void close()
+        {
+            std::lock_guard<std::mutex> g( lock );
+            if( file != nullptr )
+                std::fclose( file );
+            file = nullptr;
+        }
+
+        void tx( const std::vector<uint8_t>& bytes ) { line( "TX", bytes.data(), bytes.size() ); }
+        void rx( const uint8_t* bytes, size_t length ) { line( "RX", bytes, length ); }
+
+        void decoded( int type, int dir, int cmd, const std::vector<int>& data )
+        {
+            std::lock_guard<std::mutex> g( lock );
+            if( file == nullptr )
+                return;
+            std::fprintf( file, "%.3f DEC t%d d%d c%d [", now(), type, dir, cmd );
+            for( size_t i = 0; i < data.size(); ++i )
+                std::fprintf( file, i == 0 ? "%d" : " %d", data[i] );
+            std::fputs( "]\n", file );
+            std::fflush( file );
+        }
+
+    private:
+        double now() const { return juce::Time::getMillisecondCounterHiRes() - startMs; }
+
+        void line( const char* tag, const uint8_t* bytes, size_t length )
+        {
+            std::lock_guard<std::mutex> g( lock );
+            if( file == nullptr )
+                return;
+            std::fprintf( file, "%.3f %s", now(), tag );
+            for( size_t i = 0; i < length; ++i )
+                std::fprintf( file, " %02x", bytes[i] );
+            std::fputc( '\n', file );
+            std::fflush( file );
+        }
+
+        std::mutex lock;
+        FILE*      file{ nullptr };
+        double     startMs{ 0 };
+    };
+
+    //==============================================================================
     /// The serial line to Kick: a pty by default (not on Windows), or a TCP listener. Kick
     /// connects to the listener through a tcp:// KICK_SERIAL_PORT, and QEMU's serial chardev does too.
     class Link : private juce::Thread
@@ -120,6 +198,7 @@ namespace
         }
 
         std::function<void( const Frame& )> onFrame;
+        Trace                               trace;
 
 #if !JUCE_WINDOWS
         /// Opens a pty and returns the slave path. The slave stays open here so the
@@ -167,6 +246,7 @@ namespace
                 out.push_back( (uint8_t)v );
             out.push_back( crc8( out ) );
             out.push_back( '\n' ); // trailing byte Kick's reader counts in its frame length
+            trace.tx( out );
 
             std::lock_guard<std::mutex> g( writeLock );
             if( tcpUp.load() )
@@ -253,6 +333,7 @@ namespace
                     const int n = client->read( buf, (int)sizeof( buf ), false );
                     if( n > 0 )
                     {
+                        trace.rx( buf, (size_t)n );
                         for( int i = 0; i < n; ++i )
                             feed( buf[i] );
                     }
@@ -275,6 +356,7 @@ namespace
                 const auto n = ::read( fd, buf, sizeof( buf ) );
                 if( n > 0 )
                 {
+                    trace.rx( buf, (size_t)n );
                     for( ssize_t i = 0; i < n; ++i )
                         feed( buf[i] );
                 }
@@ -340,8 +422,12 @@ namespace
                         state = Crc;
                     break;
                 case Crc:
-                    if( crc8( raw ) == b && onFrame )
-                        onFrame( frame );
+                    if( crc8( raw ) == b )
+                    {
+                        trace.decoded( frame.type, frame.dir, frame.cmd, frame.data );
+                        if( onFrame )
+                            onFrame( frame );
+                    }
                     state = Hdr1;
                     break;
             }
@@ -1804,6 +1890,10 @@ namespace
                 rootPath = juce::SystemStats::getEnvironmentVariable( "KICK_EMU_ROOT", {} );
             root = rootPath.isNotEmpty() ? juce::File( rootPath ) : juce::File::getSpecialLocation( juce::File::userHomeDirectory ).getChildFile( "KickEmu" );
             root.getChildFile( "dev" ).createDirectory();
+
+            const auto tracePath = juce::SystemStats::getEnvironmentVariable( "KICK_EMU_TRACE", {} );
+            if( tracePath.isNotEmpty() && !link.trace.open( tracePath ) )
+                std::cerr << "KickSurface: cannot open KICK_EMU_TRACE file " << tracePath << std::endl;
 
             juce::String ttyLabel;
             // Windows has no pty, so it always serves the line over TCP.
