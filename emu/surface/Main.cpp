@@ -505,7 +505,7 @@ namespace
     };
     const Pot panelPots[] = {
         { potMaster, "MASTER", 67, 152, 32 }, { potRec, "REC", 67, 276, 32 },
-        { 1, "P1", 920, 78, 30 }, { 2, "P2", 920, 177, 30 }, { 3, "P3", 920, 276, 30 }, { 4, "P4", 920, 376, 30 },
+        { 1, "P1", 920, 78, 27 }, { 2, "P2", 920, 177, 27 }, { 3, "P3", 920, 276, 27 }, { 4, "P4", 920, 376, 27 },
     };
 
     constexpr float padX0 = 140.6f, padY0 = 502.4f, padW = 99.0f, padH = 95.0f, padDx = 121.7f, padDy = 118.4f;
@@ -847,17 +847,64 @@ namespace
         int   panelSide() const { return getHeight(); }
 
         //==============================================================================
-        static void drawPot( juce::Graphics& g, float cx, float cy, float r, float angle )
+        /// A knurled knob like the unit's: a scalloped skirt, a faceted cone cap lit from the top left and a
+        /// thin pointer. The skirt and facets turn with the knob; the lighting stays put.
+        static void drawPot( juce::Graphics& g, float cx, float cy, float r, float angle, int knurls = 12, bool pointer = true )
         {
-            g.setColour( juce::Colours::black.withAlpha( 0.6f ) );
-            g.fillEllipse( cx - r - 3, cy - r - 1, ( r + 3 ) * 2, ( r + 3 ) * 2 );
-            juce::ColourGradient body( juce::Colour( 0xff3c3f47 ), cx - r * 0.5f, cy - r * 0.6f, juce::Colour( 0xff0e0f12 ), cx + r * 0.6f, cy + r * 0.7f, false );
-            g.setGradientFill( body );
-            g.fillEllipse( cx - r, cy - r, r * 2, r * 2 );
-            g.setColour( juce::Colour( 0xff555966 ) );
-            g.drawEllipse( cx - r, cy - r, r * 2, r * 2, 1.2f );
-            g.setColour( juce::Colour( 0xffe8eaf0 ) );
-            g.drawLine( cx + std::sin( angle ) * r * 0.25f, cy - std::cos( angle ) * r * 0.25f, cx + std::sin( angle ) * r * 0.92f, cy - std::cos( angle ) * r * 0.92f, 3.0f );
+            using juce::Colour;
+            constexpr float twoPi = juce::MathConstants<float>::twoPi;
+            const float     light = -0.8f; // direction the light comes from, clockwise from 12 o'clock (top left)
+
+            // Drop shadow
+            g.setGradientFill( juce::ColourGradient( juce::Colours::black.withAlpha( 0.7f ), cx, cy + r * 0.15f, juce::Colours::transparentBlack,
+                                                     cx, cy + r * 1.35f, true ) );
+            g.fillEllipse( cx - r * 1.35f, cy - r * 1.2f, r * 2.7f, r * 2.7f );
+
+            // Knurled skirt
+            juce::Path skirt;
+            for( int i = 0; i <= 96; ++i )
+            {
+                const float a  = (float)i / 96.0f * twoPi;
+                const float rr = r * ( 0.94f + 0.06f * std::cos( a * (float)knurls - angle * (float)knurls ) );
+                const juce::Point<float> p( cx + std::sin( a ) * rr, cy - std::cos( a ) * rr );
+                i == 0 ? skirt.startNewSubPath( p ) : skirt.lineTo( p );
+            }
+            skirt.closeSubPath();
+            g.setGradientFill( juce::ColourGradient( Colour( 0xff383b42 ), cx - r * 0.6f, cy - r * 0.7f, Colour( 0xff060709 ), cx + r * 0.5f, cy + r * 0.8f, false ) );
+            g.fillPath( skirt );
+            g.setColour( Colour( 0xff0a0b0d ) );
+            g.strokePath( skirt, juce::PathStrokeType( 1.0f ) );
+
+            // Faceted cone cap: each facet's shade comes from where it faces relative to the light
+            const float capR   = r * 0.76f;
+            const int   facets = 16;
+            for( int i = 0; i < facets; ++i )
+            {
+                const float a0    = angle + (float)i / (float)facets * twoPi;
+                const float a1    = a0 + twoPi / (float)facets;
+                const float facing = 0.5f + 0.5f * std::cos( ( a0 + a1 ) * 0.5f - light );
+                const float shade  = ( 0.15f + 0.85f * facing * facing ) * ( i % 2 == 0 ? 1.0f : 0.55f );
+                juce::Path wedge;
+                wedge.startNewSubPath( cx, cy );
+                wedge.addCentredArc( cx, cy, capR, capR, 0.0f, a0, a1 );
+                wedge.closeSubPath();
+                g.setColour( Colour( 0xff111216 ).interpolatedWith( Colour( 0xff6a6e78 ), shade ) );
+                g.fillPath( wedge );
+            }
+            g.setGradientFill( juce::ColourGradient( Colour( 0x60ffffff ), cx - capR * 0.7f, cy - capR * 0.7f, Colour( 0x00ffffff ), cx, cy, false ) );
+            g.drawEllipse( cx - capR, cy - capR, capR * 2, capR * 2, 1.0f );
+            g.setColour( Colour( 0xff08090b ) );
+            g.drawEllipse( cx - capR - 0.6f, cy - capR - 0.6f, capR * 2 + 1.2f, capR * 2 + 1.2f, 0.8f );
+            g.setGradientFill( juce::ColourGradient( Colour( 0xff2a2c32 ), cx - r * 0.1f, cy - r * 0.1f, Colour( 0xff0c0d10 ), cx + r * 0.15f, cy + r * 0.15f, true ) );
+            g.fillEllipse( cx - r * 0.16f, cy - r * 0.16f, r * 0.32f, r * 0.32f );
+
+            if( pointer )
+            {
+                const float s = std::sin( angle ), c = std::cos( angle );
+                g.setColour( Colour( 0xffd8dbe2 ) );
+                g.drawLine( cx + s * r * 0.24f, cy - c * r * 0.24f, cx + s * r * 0.9f, cy - c * r * 0.9f, juce::jmax( 1.4f, r * 0.06f ) );
+                g.fillEllipse( cx + s * r * 0.9f - 1.6f, cy - c * r * 0.9f - 1.6f, 3.2f, 3.2f );
+            }
         }
 
         bool ledLit( int id, bool phase ) const
@@ -927,6 +974,9 @@ namespace
                 if( pot.knob >= 100 )
                 {
                     g.drawText( pot.label, (int)pot.cx - 40, (int)( pot.cy - pot.r - 28 ), 80, 14, juce::Justification::centred );
+                    // End-stop dots at 7 and 5 o'clock, as printed on the unit
+                    for( const float a : { -2.36f, 2.36f } )
+                        g.fillEllipse( pot.cx + std::sin( a ) * ( pot.r + 7 ) - 1.5f, pot.cy - std::cos( a ) * ( pot.r + 7 ) - 1.5f, 3.0f, 3.0f );
                     g.setFont( 9.0f );
                     g.drawText( "MIN", (int)pot.cx - 44, (int)( pot.cy + pot.r + 12 ), 40, 12, juce::Justification::centred );
                     g.drawText( "MAX", (int)pot.cx + 4, (int)( pot.cy + pot.r + 12 ), 40, 12, juce::Justification::centred );
@@ -1021,18 +1071,31 @@ namespace
                 g.setColour( Colour( 0xff2a2c33 ) );
                 g.drawRoundedRectangle( jogBox, 22, 1.5f );
                 const bool live = model.appLive;
-                for( int i = 0; i < 32; ++i )
-                {
-                    const float a = (float)i / 32.0f * juce::MathConstants<float>::twoPi;
-                    const float x = jogCentre.x + std::sin( a ) * ( jogR + 8 ), y = jogCentre.y - std::cos( a ) * ( jogR + 8 );
-                    g.setColour( live ? Colour( 0xffff2a2a ) : Colour( 0xff3a1c1c ) );
-                    g.fillEllipse( x - 2.2f, y - 2.2f, 4.4f, 4.4f );
-                }
-                drawPot( g, jogCentre.x, jogCentre.y, jogR - 6, knobAngle[0] );
+                const auto disc = [&]( float rad ) { return juce::Rectangle<float>( rad * 2, rad * 2 ).withCentre( jogCentre ); };
+
+                // Glossy collar the knob sits in
+                g.setGradientFill( juce::ColourGradient( Colour( 0xff3a3d44 ), jogCentre.x - jogR, jogCentre.y - jogR, Colour( 0xff050506 ),
+                                                         jogCentre.x + jogR * 0.6f, jogCentre.y + jogR, false ) );
+                g.fillEllipse( disc( jogR + 12 ) );
+                g.setColour( Colour( 0xff050506 ) );
+                g.fillEllipse( disc( jogR + 2 ) );
+
+                // Solid LED ring, with a glow while the app is live
+                const Colour ring = live ? Colour( 0xffff3344 ) : Colour( 0xff3a1c1f );
+                if( live )
+                    for( const float w : { 9.0f, 6.0f } )
+                    {
+                        g.setColour( ring.withAlpha( w > 8 ? 0.12f : 0.25f ) );
+                        g.drawEllipse( disc( jogR - 3 ), w );
+                    }
+                g.setColour( ring );
+                g.drawEllipse( disc( jogR - 3 ), 3.0f );
+
+                drawPot( g, jogCentre.x, jogCentre.y, jogR - 9, knobAngle[0], 8, false );
                 if( pressedButtons[btnEnter] )
                 {
                     g.setColour( juce::Colours::white.withAlpha( 0.2f ) );
-                    g.fillEllipse( jogCentre.x - jogR + 6, jogCentre.y - jogR + 6, ( jogR - 6 ) * 2, ( jogR - 6 ) * 2 );
+                    g.fillEllipse( disc( jogR - 9 ) );
                 }
             }
 
