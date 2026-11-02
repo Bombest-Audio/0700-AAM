@@ -28,7 +28,7 @@ namespace kick_gesture
 {
     // Reads the one-line JSON reply of kick-camera's `status` command (docs/camera.md). Only the `state`, `capturing`
     // and `error` fields are used.
-    //   state "streaming" and capturing true  -> Streaming
+    //   state "streaming"                     -> Streaming (capturing follows the `capturing` field)
     //   state "off"                           -> Off
     //   state "error" or "ended"              -> Error, with the `error` text as detail
     //   anything else, or text that is not a status object -> ServiceMissing with a detail saying the reply was not understood

@@ -60,12 +60,12 @@ public:
 
         server_.start();
         kick_gesture::sharedCameraService().start();
-        contracts::GestureSignals::gestureReceived.connect( [this]( const contracts::GestureEvent& e ) { onGesture( e ); } );
+        gestureConnection_ = contracts::GestureSignals::gestureReceived.connect( [this]( const contracts::GestureEvent& e ) { onGesture( e ); } );
     }
 
     ~KickGestureAdapter()
     {
-        contracts::GestureSignals::gestureReceived.disconnect_all();
+        gestureConnection_.disconnect();
         kick_gesture::sharedCameraService().stop();
         server_.stop();
     }
@@ -135,6 +135,7 @@ private:
         contracts::DclSignals::hardwareInputTriggered( msg );
     }
 
+    sigslot::scoped_connection     gestureConnection_;
     kick_gesture::GestureIpcServer server_;
     kick_gesture::GestureRouter    router_;
     std::string                    lastMappingText_{ "\x01" }; // never equal to a real text, so the first event loads the mapping

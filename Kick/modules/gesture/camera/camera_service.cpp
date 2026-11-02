@@ -37,6 +37,10 @@ namespace kick_gesture
     namespace
     {
         constexpr int kPollMs = 1000;
+
+        // Monotonic milliseconds without the 49 day wrap of Time::getMillisecondCounter, which would leave the backoff
+        // waiting for a time that has already passed.
+        uint64_t nowMs() { return static_cast<uint64_t>( juce::Time::getMillisecondCounterHiRes() ); }
     }
 
     struct CameraService::Impl : public juce::Thread
@@ -61,7 +65,7 @@ namespace kick_gesture
                     backoff.success();
                 }
 
-                const uint64_t now = juce::Time::getMillisecondCounter();
+                const uint64_t now = nowMs();
                 contracts::CameraStatus status = last;
                 int                     waitMs = kPollMs;
                 if( backoff.due( now ) )
@@ -79,7 +83,7 @@ namespace kick_gesture
                     }
                 }
                 if( !backoff.due( now ) || status.state == contracts::CameraState::ServiceMissing )
-                    waitMs = static_cast<int>( std::max<uint64_t>( 100, std::min<uint64_t>( backoff.remainingMs( juce::Time::getMillisecondCounter() ), 30000 ) ) );
+                    waitMs = static_cast<int>( std::max<uint64_t>( 100, std::min<uint64_t>( backoff.remainingMs( nowMs() ), 30000 ) ) );
 
                 // Only a change goes to the UI. The detail text of a missing service changes with the errno, so compare state alone for it.
                 const bool changed = !haveLast || last.state != status.state || last.capturing != status.capturing
