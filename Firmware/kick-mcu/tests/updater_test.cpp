@@ -263,6 +263,19 @@ TEST_F( UpdateRig, AnInitiateAfterACommitIsRefusedAndTheCommitStands )
     EXPECT_EQ( Slot::B, reboot().slot );
 }
 
+TEST_F( UpdateRig, AStrayEndOrDataAfterACommitDoesNotCancelTheReset )
+{
+    ASSERT_TRUE( initiate() );
+    transfer( v2 );
+    ASSERT_EQ( UpdateState::Committed, updater->state() );
+    send( { c::SW_UPDATE_END } );
+    const uint8_t b = 0x42;
+    data( 0, &b, 1 );
+    EXPECT_EQ( UpdateState::Committed, updater->state() ) << "the armed trial is not undone by late frames";
+    runResetDelay();
+    EXPECT_EQ( 1u, power.resetRequests() );
+}
+
 TEST_F( UpdateRig, SubcommandsOnlyTheMcuSendsAreIgnored )
 {
     replies.got.clear();

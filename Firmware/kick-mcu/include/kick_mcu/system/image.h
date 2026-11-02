@@ -21,7 +21,7 @@ namespace system
     constexpr uint16_t kImageHeaderVersion = 1;
 
     /// typeVersionNo from Defines.hpp, without the alignment byte. The handshake reports major
-    /// and minor only; bug travels in the extended report (see report.h).
+    /// and minor only; bug travels in the extended report (see self_check.h).
     struct VersionNo
     {
         uint8_t major{ 0 };

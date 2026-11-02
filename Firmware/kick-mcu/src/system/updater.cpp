@@ -69,7 +69,10 @@ namespace system
     void Updater::fail( UpdateFailure why )
     {
         reject( why );
-        state_ = UpdateState::Idle;
+        // A committed update stands: the trial is already armed, and a late or repeated frame
+        // must not cancel the reset that starts it.
+        if( state_ != UpdateState::Committed )
+            state_ = UpdateState::Idle;
     }
 
     void Updater::onFrame( const uint8_t* payload, size_t length )
