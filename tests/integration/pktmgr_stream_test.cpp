@@ -169,11 +169,9 @@ TEST( PktMgrStream, MaximumPayloadFitsTheRxFifo )
     EXPECT_EQ( got[0].data, payload );
 }
 
-// Known issue: the CRC accumulator inside PushByteToRxFifo is a function-local
-// `static std::vector`, shared by every CPktMgr instance and never cleared when a
-// frame is abandoned. A truncated frame therefore poisons the next frame, even on
-// a different instance. Flip this test when the accumulator becomes a member.
-TEST( PktMgrKnownIssue, TruncatedFramePoisonsTheNextFrameOnAnotherInstance )
+// The CRC accumulator used to be a function-local static shared by every CPktMgr, so a
+// truncated frame on one link poisoned the next frame on another. It is per instance now.
+TEST( PktMgrStream, AbandonedFrameOnOneInstanceDoesNotAffectAnother )
 {
     PktHarness a;
     auto       truncated = a.encode( CPktMgr::EN_PKT_TYPE_BUTTON, CPktMgr::EN_PKT_REQUEST, 1, { 1, 2, 3 } );
@@ -182,12 +180,5 @@ TEST( PktMgrKnownIssue, TruncatedFramePoisonsTheNextFrameOnAnotherInstance )
 
     PktHarness b;
     b.feed( b.encode( CPktMgr::EN_PKT_TYPE_BUTTON, CPktMgr::EN_PKT_REQUEST, 2, { 9, 9 } ) );
-    EXPECT_FALSE( b.mgr.IsFrameRcvComplete() ) << "fix expected to make this true";
-
-    // Leave the shared accumulator clean for tests that run after this one.
-    b.mgr.ClearReceiver();
-    PktHarness c;
-    c.mgr.ClearReceiver();
-    for( int i = 0; i < 8; ++i )
-        c.feed( c.encode( CPktMgr::EN_PKT_TYPE_SYSTEM, CPktMgr::EN_PKT_REQUEST, 0, { 1 } ) ), c.mgr.ClearReceiver();
+    EXPECT_TRUE( b.mgr.IsFrameRcvComplete() );
 }

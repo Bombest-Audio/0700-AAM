@@ -192,40 +192,63 @@ TEST( PktMgrHwMsg, ResetZeroesMessage )
 // visible change: when you fix one, flip the expectation and rename the test.
 // ---------------------------------------------------------------------------
 
-TEST( PktMgrKnownIssue, EmptyPayloadFrameNeverCompletes )
+TEST( PktMgrRecovery, EmptyPayloadFrameCompletes )
 {
-    // The encoder emits size==1 (CRC only) for a payload-less message, but the
-    // decoder's DATA state needs writePos < size-1 and never reaches the CRC state.
     PktHarness h;
     h.feed( h.encode( kButton, kReq, 1 ) );
-    EXPECT_FALSE( h.mgr.IsFrameRcvComplete() ) << "fix expected to make this true";
+    EXPECT_TRUE( h.mgr.IsFrameRcvComplete() );
+    EXPECT_EQ( h.mgr.GetRxCommand(), 1 );
+    EXPECT_TRUE( h.drainPayload().empty() );
 }
 
-TEST( PktMgrKnownIssue, LeadingNoiseBreaksTheFirstFrameCrc )
+TEST( PktMgrRecovery, LeadingNoiseIsSkipped )
 {
-    // In INIT_1 every byte, including garbage before 'M', is appended to the
-    // CRC accumulator, so a clean frame after line noise fails its CRC.
     PktHarness h;
     h.feed( { 0x00, 0x13, 0x37 } );
     h.feed( h.encode( kButton, kReq, 4, { 1, 2 } ) );
-    EXPECT_FALSE( h.mgr.IsFrameRcvComplete() ) << "fix expected to make this true";
+    ASSERT_TRUE( h.mgr.IsFrameRcvComplete() );
+    EXPECT_EQ( h.drainPayload(), ( std::vector<uint8_t>{ 1, 2 } ) );
 }
 
-TEST( PktMgrKnownIssue, RejectedFrameWedgesReceiverUntilCleared )
+TEST( PktMgrRecovery, StrayStartByteBeforeRealFrameIsSkipped )
 {
-    // After a CRC failure the state machine stays in CRC; a following good frame is lost.
+    PktHarness h;
+    h.feed( { 'M', 'M' } ); // false start, then the real 'M' of the frame
+    auto frame = h.encode( kButton, kReq, 4, { 7 } );
+    h.feed( std::vector<char>( frame.begin() + 1, frame.end() ) );
+    EXPECT_TRUE( h.mgr.IsFrameRcvComplete() );
+}
+
+TEST( PktMgrRecovery, RejectedFrameDoesNotWedgeReceiver )
+{
     PktHarness h;
     auto       bad = h.encode( kButton, kReq, 5, { 1, 2 } );
     bad.back() ^= 0xFF;
     h.feed( bad );
-    h.feed( h.encode( kButton, kReq, 6, { 3, 4 } ) );
-    EXPECT_FALSE( h.mgr.IsFrameRcvComplete() ) << "fix expected to make this true";
+    EXPECT_FALSE( h.mgr.IsFrameRcvComplete() );
 
-    h.mgr.ClearReceiver();
     h.feed( h.encode( kButton, kReq, 6, { 3, 4 } ) );
-    EXPECT_TRUE( h.mgr.IsFrameRcvComplete() ) << "ClearReceiver is the documented recovery";
+    ASSERT_TRUE( h.mgr.IsFrameRcvComplete() );
+    EXPECT_EQ( h.mgr.GetRxCommand(), 6 );
+    EXPECT_EQ( h.drainPayload(), ( std::vector<uint8_t>{ 3, 4 } ) );
 }
 
-// Not covered on purpose: PushUint8ToTxFifo / PopUint8FromTxFifo. Init() never
-// resets m_ui8TxFifoWritePos / ReadPos, so they start indeterminate and any
-// assertion on FIFO order would be flaky (ASan/MSan would flag it).
+TEST( PktMgrRecovery, OversizedLengthIsRejectedWithoutOverrunningTheFifo )
+{
+    PktHarness h;
+    auto       frame = h.encode( kButton, kReq, 5, { 1, 2 } );
+    frame[5]         = 200; // claims far more payload than the 30 byte RX FIFO holds
+    h.feed( frame );
+    EXPECT_FALSE( h.mgr.IsFrameRcvComplete() );
+    h.feed( h.encode( kButton, kReq, 6, { 3 } ) );
+    EXPECT_TRUE( h.mgr.IsFrameRcvComplete() );
+}
+
+TEST( PktMgrRecovery, TxFifoStartsEmptyAndKeepsOrder )
+{
+    PktHarness h;
+    h.mgr.PushUint8ToTxFifo( 0xAA );
+    h.mgr.PushUint8ToTxFifo( 0xBB );
+    EXPECT_EQ( h.mgr.PopUint8FromTxFifo(), 0xAA );
+    EXPECT_EQ( h.mgr.PopUint8FromTxFifo(), 0xBB );
+}
