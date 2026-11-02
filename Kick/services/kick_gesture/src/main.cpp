@@ -66,6 +66,7 @@ namespace
             "  --threads N              ONNX Runtime threads, 1 to 4 (default 1)\n"
             "  --events-stdout          write events to standard output\n"
             "  --events-socket PATH     send events to a Unix stream socket the app listens on\n"
+            "  --events-ipc HOST:PORT   send events to the Kick app's IPC server on loopback (127.0.0.1:50501)\n"
             "  --events-file PATH       append events to a file\n"
             "  --record FILE            record the landmark stream (hand geometry only, no pixels)\n"
             "  --replay FILE            run a recorded landmark stream through the gesture logic and exit\n"
@@ -232,8 +233,9 @@ int main(int argc, char** argv)
     StdoutSink stdoutSink;
     FileSink fileSink;
     std::unique_ptr<UnixSocketSink> socketSink;
+    std::unique_ptr<LoopbackIpcSink> ipcSink;
     std::vector<IEventSink*> sinks;
-    if (sc.eventsStdout || (!replayPath.empty() && sc.eventsFile.empty() && sc.eventsSocket.empty())) sinks.push_back(&stdoutSink);
+    if (sc.eventsStdout || (!replayPath.empty() && sc.eventsFile.empty() && sc.eventsSocket.empty() && sc.eventsIpc.empty())) sinks.push_back(&stdoutSink);
     if (!sc.eventsFile.empty())
     {
         if (!fileSink.open(sc.eventsFile, err))
@@ -247,6 +249,18 @@ int main(int argc, char** argv)
     {
         socketSink = std::make_unique<UnixSocketSink>(sc.eventsSocket);
         sinks.push_back(socketSink.get());
+    }
+    if (!sc.eventsIpc.empty())
+    {
+        std::string host;
+        uint16_t port = 0;
+        if (!parseIpcEndpoint(sc.eventsIpc, host, port))
+        {
+            std::fprintf(stderr, "kick-gesture: events_ipc must be host:port, got %s\n", sc.eventsIpc.c_str());
+            return 2;
+        }
+        ipcSink = std::make_unique<LoopbackIpcSink>(host, port);
+        sinks.push_back(ipcSink.get());
     }
 
     if (!replayPath.empty())
@@ -273,7 +287,7 @@ int main(int argc, char** argv)
 
     if (sinks.empty())
     {
-        std::fputs("kick-gesture: no event sink; give --events-socket, --events-file or --events-stdout\n", stderr);
+        std::fputs("kick-gesture: no event sink; give --events-ipc, --events-socket, --events-file or --events-stdout\n", stderr);
         return 2;
     }
 #ifdef KICK_GESTURE_HAVE_ONNX

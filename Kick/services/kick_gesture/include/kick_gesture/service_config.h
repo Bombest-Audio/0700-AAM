@@ -39,6 +39,7 @@ namespace kickgest
         std::string gestureConfig;           // path of gesture.json, empty for the defaults
         bool eventsStdout = false;           // one JSON line per event on standard output
         std::string eventsSocket;            // Unix stream socket the app listens on
+        std::string eventsIpc;               // host:port of the Kick app's IPC server on loopback, for example 127.0.0.1:50501
         std::string eventsFile;              // append events to this file
         std::string record;                  // write the landmark stream here (geometry only, no pixels)
         uint32_t statusIntervalMs = 5000;

@@ -89,4 +89,16 @@ A status line is written at every change of `state` or `reason` and at least eve
 
 ## Transport
 
-The service connects to a Unix stream socket the Kick app listens on (`events_socket`). The socket is non-blocking. When the app is not there or does not read, events are dropped, not queued. A stale gesture delivered late is worse than no gesture. The app can also read from a file (`events_file`) or standard output (`events_stdout`) for testing. More than one sink can be on at once.
+The Kick app listens on TCP port 50501 of 127.0.0.1 and the service connects to it (`events_ipc = 127.0.0.1:50501`). The app side is `GestureIpcServer` in `Kick/modules/gesture`. The framing is the one JUCE's `InterprocessConnection` uses: the magic number `0xf2b49e2c` and the payload length, both 32 bit little endian, then the payload. The payload is JSON.
+
+The service first sends a REGISTER message (`message_type` 1, `connection_id` 500, `connection_name` `kick-gesture`), then one message per line it writes:
+
+```json
+{"message_id":12,"originator":500,"message_type":500,"transaction_type":30,"event":{"type":"swipe_left","hand":"right","confidence":0.97,"t_ms":48210}}
+```
+
+`message_type` 500 carries a gesture event and 501 a status line. The service's own line is nested under `event`, unchanged, so everything in this document about the fields still holds.
+
+The socket is non-blocking. When the app is not there or does not read, events are dropped, not queued. A stale gesture delivered late is worse than no gesture. While the app is not listening the service retries with a growing delay, 1 s doubling up to 30 s, and starts again at 1 s after a connect. Nothing authenticates the sender, so any local process can talk to the port; it listens on loopback only and gestures are off until the user turns them on.
+
+The older sinks still work: a Unix stream socket (`events_socket`), a file (`events_file`) and standard output (`events_stdout`). More than one sink can be on at once.
