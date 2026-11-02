@@ -28,6 +28,8 @@ emu/build.sh            # Kick + Surface into build/emu and build/surface
 emu/run.sh              # opens both windows
 emu/run.sh --root DIR   # device root, default ~/KickEmu
 emu/run.sh --script emu/tests/smoke.script   # headless run, exit code = result
+python3 emu/tests/touch.py                    # touchscreen regression test (dialogs, file browser, double tap)
+python3 emu/tests/protocol_drift.py             # fails when the Surface's protocol.h drifts from Kick's contracts
 ```
 
 Needs Xcode, cmake, ninja, python3. On Windows, `emu\build.ps1` uses the CMake and Ninja that ship with Visual Studio 2022 (C++ workload) and `emu\run.ps1` takes `-Script`, `-Root` and `-Port`; clone with `core.autocrlf=false` so the JUCE patch applies. Demo samples need Python 3 on Windows (`winget install Python.Python.3.12`), otherwise they are skipped. The first build fetches JUCE 7.0.12 and other deps through CPM and applies `emu/patches/juce_7.0.12_macos15_sdk.patch`.
@@ -51,9 +53,9 @@ Everything Kick expects at a Linux path lives under `KICK_EMU_ROOT`:
 
 ## Surface
 
-Mouse: click pads and buttons, drag knobs, drag or scroll the jog wheel (click it for Enter), drag the touch strip, and touch Kick's screen in the bezel. The dev drawer (the `dev` button) holds the velocity and pressure sliders, the SD and USB toggles, the CV meters and the packet log.
+Mouse: click pads and buttons, drag knobs, drag or scroll the jog wheel (click it for Enter), drag the touch strip, and touch Kick's screen in the bezel. The dev drawer (the `dev` button) holds the velocity and pressure sliders, the SD and USB toggles, the CV meters and the packet log. The window opens at full size, or smaller when the screen's free area (menu bar and dock excluded) cannot hold it, and resizes from any edge or corner while keeping the panel square.
 
-Dual-legend keys (BANK A / E, MAIN / GRID and so on) send the printed primary id, and the second legend while Shift is held. Clicking SHIFT latches it. This is an assumption about how the unit's MCU sends the shifted layer, so check it against hardware before relying on it. The unit has only four Q-Link knobs, P1 to P4, so they send knobs 1-4 and the drawer's page buttons move them to 5-8, 9-12 or 13-16. MASTER and REC are analog on the unit and only turn on screen.
+Dual-legend keys (BANK A / E, MAIN / GRID and so on) send the printed primary id, and the second legend while Shift is held. Clicking SHIFT latches it. This is an assumption about how the unit's MCU sends the shifted layer, so check it against hardware before relying on it. The unit has only four Q-Link knobs, P1 to P4, so they send knobs 1-4 and the drawer's page buttons move them to 5-8, 9-12 or 13-16. MASTER and REC are analog on the unit and only turn on screen. P1 to P4 are endless encoders that send relative steps, so they have no min or max of their own: the screen in Kick that has the focus decides what a step does (the step sequencer, for one, adds it to a step's velocity of 0-127, probability of 0-100 or ratchet of 1-8). They spin freely on screen, and a trackpad flick counts only while the fingers move.
 
 Keyboard: pads `z x c v / a s d f / q w e r / 1 2 3 4` (bottom row first), space = Play, return = Enter, arrows = Knob CCW/CW, esc = Back, tab = Stop, shift = Shift, up/down = encoder.
 
@@ -72,9 +74,11 @@ down|move|up <x> <y>  (live pointer, used for the bezel; a leading ! suppresses 
 quit
 ```
 
-The socket is localhost only. A first line that is not a known command closes the connection, which stops browser cross-protocol requests from reaching later lines.
+The socket is localhost only and serves each connection on its own thread, so scripts and tools work while the Surface keeps its bezel connection open. A first line that is not a known command closes the connection, which stops browser cross-protocol requests from reaching later lines.
 
-Taps go straight to the component under the point. Injecting through the window peer fails on macOS unless the window is topmost.
+Taps go through Kick's window peer as mouse events, the same path as real input, so mouse listeners, click-to-focus, modal dialogs and double taps work. Scripted taps carry their intended timestamps: JUCE treats a press longer than 300 ms as a drag, so a busy message thread must not stretch a tap. JUCE on macOS has no touch input sources and drops touch events, which is why they go in as mouse events.
+
+On the unit Kick's window is the only one and always has focus. Here it is minimised behind the Surface, which JUCE reads as hidden and unfocused. Left alone, dialogs open as separate invisible windows and no control ever takes keyboard focus, so the encoder and knobs have nothing to talk to. `emu/patches/juce_7.0.12_emu_kiosk.patch` (applied for `KICK_EMU` builds on every host) makes the minimised window count as showing and focused, keeps focus when the OS window loses it, parents dialogs to the first window when none is active, and stops `Component::contains()` asking the OS which window is on top.
 
 Kick also streams its window to the Surface on TCP `50903` (`KICK_EMU_FRAME_PORT`, `KICK_EMU_FRAME_FPS` default 30) and minimises its own window; `KICK_EMU_SHOW_WINDOW=1` keeps it visible.
 
