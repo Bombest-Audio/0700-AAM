@@ -6,8 +6,10 @@
 #   emu/run.sh --root DIR           emulated device root (default ~/KickEmu)
 #   emu/run.sh --no-surface         Kick only (set KICK_SERIAL_PORT yourself)
 #   emu/run.sh --tcp PORT           Surface listens on TCP instead of opening a pty; Kick connects to it
+#   emu/run.sh --firmware           run the control surface firmware (Firmware/kick-mcu, kick-mcu-sim) in place of the
+#                                   Surface: headless, driven by --script (see Firmware/kick-mcu/sim/script_player.h)
 #
-# Environment: KICK_EMU_ROOT, KICK_EMU_CONTROL_PORT (50901), KICK_EMU_EVENT_PORT (50902),
+# Environment: MCU_BUILD_DIR (build/mcu, where cmake built kick-mcu-sim), KICK_EMU_ROOT, KICK_EMU_CONTROL_PORT (50901), KICK_EMU_EVENT_PORT (50902),
 # KICK_AUDIO_DEVICE (CoreAudio device name; default system output).
 set -euo pipefail
 
@@ -28,6 +30,7 @@ done
 
 SCRIPT=""
 USE_SURFACE=1
+USE_FIRMWARE=0
 TCP_PORT=""
 export KICK_EMU_ROOT="${KICK_EMU_ROOT:-$HOME/KickEmu}"
 
@@ -36,13 +39,21 @@ while [[ $# -gt 0 ]]; do
         --script) SCRIPT="$2"; shift ;;
         --root) export KICK_EMU_ROOT="$2"; shift ;;
         --no-surface) USE_SURFACE=0 ;;
+        --firmware) USE_FIRMWARE=1 ;;
         --tcp) TCP_PORT="$2"; shift ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
     shift
 done
 
-[[ -x "$KICK_BIN" && -n "$SURFACE_BIN" ]] || { echo "not built yet: run emu/build.sh" >&2; exit 1; }
+MCU_SIM_BIN="$REPO/${MCU_BUILD_DIR:-build/mcu}/kick-mcu-sim"
+if [[ "$USE_FIRMWARE" == 1 ]]; then
+    [[ -x "$KICK_BIN" ]] || { echo "not built yet: run emu/build.sh" >&2; exit 1; }
+    [[ -x "$MCU_SIM_BIN" ]] || { echo "kick-mcu-sim not built: cmake -S Firmware/kick-mcu -B ${MCU_BUILD_DIR:-build/mcu} -G Ninja && cmake --build ${MCU_BUILD_DIR:-build/mcu}" >&2; exit 1; }
+    [[ "$USE_SURFACE" == 1 ]] || { echo "--firmware replaces the Surface; it cannot be combined with --no-surface" >&2; exit 2; }
+else
+    [[ -x "$KICK_BIN" && -n "$SURFACE_BIN" ]] || { echo "not built yet: run emu/build.sh" >&2; exit 1; }
+fi
 
 mkdir -p "$KICK_EMU_ROOT"
 [[ -d "$KICK_EMU_ROOT/data/sounds/Emu Kit" ]] || python3 "$REPO/emu/tools/make_samples.py" "$KICK_EMU_ROOT"
@@ -58,7 +69,13 @@ if [[ "$USE_SURFACE" == 1 ]]; then
     SURFACE_ARGS=(--root "$KICK_EMU_ROOT")
     [[ -n "$SCRIPT" ]] && SURFACE_ARGS+=(--script "$SCRIPT")
     [[ -n "$TCP_PORT" ]] && SURFACE_ARGS+=(--tcp "$TCP_PORT")
-    "$SURFACE_BIN" "${SURFACE_ARGS[@]}" >"$KICK_EMU_ROOT/surface.log" 2>&1 &
+    if [[ "$USE_FIRMWARE" == 1 ]]; then
+        # The firmware simulator reads Kick's log to check what the host decoded (`expect host` in a script).
+        : >"$KICK_EMU_ROOT/kick.log"
+        "$MCU_SIM_BIN" "${SURFACE_ARGS[@]}" --host-log "$KICK_EMU_ROOT/kick.log" >"$KICK_EMU_ROOT/surface.log" 2>&1 &
+    else
+        "$SURFACE_BIN" "${SURFACE_ARGS[@]}" >"$KICK_EMU_ROOT/surface.log" 2>&1 &
+    fi
     SURFACE_PID=$!
     PIDS+=("$SURFACE_PID")
 

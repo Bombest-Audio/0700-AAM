@@ -4,6 +4,9 @@
 // host changes an enum, this file stops compiling, which is the point.
 #include <gtest/gtest.h>
 
+#include <string>
+
+#include "button_names.h"
 #include "kick_mcu/contract.h"
 
 // Host headers. dcl_contracts.h includes juce_core.h; tests/stubs provides an empty one.
@@ -102,4 +105,29 @@ TEST( Contract, EveryValueMatchesTheHostHeaders )
     // The checks are all static_asserts above. This test exists so a passing build shows up in
     // the test list.
     SUCCEED();
+}
+
+// The simulator's script button names are typed by hand, so check the ones that anchor the table
+// against the host enum. A wrong anchor means every name after it is shifted.
+TEST( Contract, ScriptButtonNamesLineUpWithTheHostEnum )
+{
+    const char* const* n = kick_mcu::sim::buttonNames();
+    EXPECT_EQ( std::string( "Bank A" ), n[Host::EN_BANK_A] );
+    EXPECT_EQ( std::string( "Bank H" ), n[Host::EN_BANK_H] );
+    EXPECT_EQ( std::string( "Main" ), n[Host::EN_MAINMODE] );
+    EXPECT_EQ( std::string( "Tap Tempo" ), n[Host::EN_TAP_TEMPO] );
+    EXPECT_EQ( std::string( "+" ), n[Host::EN_PLUS] );
+    EXPECT_EQ( std::string( "Enter" ), n[Host::EN_KNOB_ENTER] );
+    EXPECT_EQ( std::string( "-" ), n[Host::EN_MINUS] );
+    EXPECT_EQ( std::string( "Knob CCW" ), n[Host::EN_KNOB_CCW] );
+    EXPECT_EQ( std::string( "Knob CW" ), n[Host::EN_KNOB_CW] );
+    EXPECT_EQ( std::string( "Shift" ), n[Host::EN_SHIFT] );
+    EXPECT_EQ( std::string( "Step Seq" ), n[Host::EN_STEP_SEQ] );
+    EXPECT_EQ( std::string( "Record" ), n[Host::EN_RECORD] );
+    EXPECT_EQ( std::string( "Stop" ), n[Host::EN_STOP] );
+    EXPECT_EQ( std::string( "Play" ), n[Host::EN_PLAY] );
+    EXPECT_EQ( std::string( "Full Level" ), n[Host::EN_FULL_LEVEL] );
+    EXPECT_EQ( std::string( "Erase" ), n[Host::EN_ERASE] );
+    EXPECT_EQ( std::string( "Color Edit" ), n[Host::EN_COLOR_EDIT] );
+    EXPECT_EQ( Host::EN_COLOR_EDIT + 1, kick_mcu::sim::kButtonNameCount );
 }

@@ -28,7 +28,10 @@ emu/build.sh            # Kick + Surface into build/emu and build/surface
 emu/run.sh              # opens both windows
 emu/run.sh --root DIR   # device root, default ~/KickEmu
 emu/run.sh --script emu/tests/smoke.script   # headless run, exit code = result
+emu/run.sh --firmware --script emu/tests/firmware-input.script   # the MCU firmware in place of the Surface
 ```
+
+`--firmware` runs `kick-mcu-sim` (built from `Firmware/kick-mcu` into `build/mcu`, or `MCU_BUILD_DIR`) instead of the Surface; it stops with the build command if the binary is missing. It cannot be combined with `--no-surface`. The script language is the firmware simulator's, documented in `Firmware/kick-mcu/README.md`. Kick is unchanged: the simulator serves the same pty or TCP line.
 
 Needs Xcode, cmake, ninja, python3. On Windows, `emu\build.ps1` uses the CMake and Ninja that ship with Visual Studio 2022 (C++ workload) and `emu\run.ps1` takes `-Script`, `-Root` and `-Port`; clone with `core.autocrlf=false` so the JUCE patch applies. Demo samples need Python 3 on Windows (`winget install Python.Python.3.12`), otherwise they are skipped. The first build fetches JUCE 7.0.12 and other deps through CPM and applies `emu/patches/juce_7.0.12_macos15_sdk.patch`.
 

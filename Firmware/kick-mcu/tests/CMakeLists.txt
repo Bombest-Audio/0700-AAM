@@ -32,6 +32,10 @@ add_executable(kick_mcu_tests
     latency_test.cpp
 )
 target_link_libraries(kick_mcu_tests PRIVATE kick_mcu_bsp_sim GTest::gtest_main)
+if(TARGET kick_mcu_sim_lib)
+    target_sources(kick_mcu_tests PRIVATE script_player_test.cpp)
+    target_link_libraries(kick_mcu_tests PRIVATE kick_mcu_sim_lib)
+endif()
 target_compile_options(kick_mcu_tests PRIVATE ${KICK_MCU_WARNINGS})
 target_compile_definitions(kick_mcu_tests PRIVATE
     KICK_TRACE_DIR="${KICK_REPO_ROOT}/emu/tests/traces"
@@ -45,6 +49,7 @@ add_executable(kick_mcu_contract_tests
     ${KICK_REPO_ROOT}/ComProtocol/PktMgr/PktMgr.cpp
 )
 target_include_directories(kick_mcu_contract_tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../sim
     ${CMAKE_CURRENT_SOURCE_DIR}/stubs
     ${KICK_REPO_ROOT}/Kick/modules/contracts/dcl
     ${KICK_REPO_ROOT}/ComProtocol/PktMgr
