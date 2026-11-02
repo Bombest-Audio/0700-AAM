@@ -45,6 +45,11 @@ add_library(kick_mcu_core STATIC
     src/output/commands.cpp
     src/output/current_budget.cpp
     src/output/led_renderer.cpp
+    src/system/image.cpp
+    src/system/boot_control.cpp
+    src/system/updater.cpp
+    src/system/self_check.cpp
+    src/system/system.cpp
     src/app/scan_loop.cpp
     src/app/firmware.cpp
 )

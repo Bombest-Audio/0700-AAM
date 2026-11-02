@@ -37,6 +37,9 @@ add_executable(kick_mcu_tests
     current_budget_test.cpp
     led_renderer_test.cpp
     leds_firmware_test.cpp
+    system_basics_test.cpp
+    updater_test.cpp
+    system_test.cpp
 )
 target_link_libraries(kick_mcu_tests PRIVATE kick_mcu_bsp_sim GTest::gtest_main)
 if(TARGET kick_mcu_sim_lib)
@@ -46,13 +49,36 @@ endif()
 target_compile_options(kick_mcu_tests PRIVATE ${KICK_MCU_WARNINGS})
 target_compile_definitions(kick_mcu_tests PRIVATE
     KICK_TRACE_DIR="${KICK_REPO_ROOT}/emu/tests/traces"
+    KICK_STAMPED_HEX="${CMAKE_CURRENT_BINARY_DIR}/payload-stamped.hex"
 )
+
+# The image tool's output, produced at build time so the C++ test checks what the tool really writes.
+# Without Python the image tool tests are left out.
+find_package(Python3 COMPONENTS Interpreter)
+set(KICK_IMAGE_TOOL "${KICK_REPO_ROOT}/tools/mcu-image-header.py")
+if(Python3_Interpreter_FOUND)
+    add_custom_command(
+        OUTPUT payload-stamped.hex
+        COMMAND ${Python3_EXECUTABLE} ${KICK_IMAGE_TOOL} stamp --hex ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/payload.hex
+                -o ${CMAKE_CURRENT_BINARY_DIR}/payload-stamped.hex --version 3.1.4 --revision 15
+        DEPENDS ${KICK_IMAGE_TOOL} ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/payload.hex
+        COMMENT "Stamping the test image with tools/mcu-image-header.py"
+        VERBATIM
+    )
+    add_custom_target(kick_mcu_stamped_image DEPENDS payload-stamped.hex)
+    add_dependencies(kick_mcu_tests kick_mcu_stamped_image)
+    target_sources(kick_mcu_tests PRIVATE image_tool_test.cpp)
+    add_test(NAME ImageToolPython COMMAND ${Python3_EXECUTABLE} ${KICK_REPO_ROOT}/tools/test_mcu_image_header.py)
+else()
+    message(STATUS "Python3 not found: the image tool tests are not built")
+endif()
 
 # The contract checks compile against the real host headers. dcl_contracts.h pulls in JUCE only
 # for a type it does not use, so a stub juce_core.h keeps JUCE out of the build.
 add_executable(kick_mcu_contract_tests
     contract_test.cpp
     pktmgr_crosscheck_test.cpp
+    system_contract_test.cpp
     ${KICK_REPO_ROOT}/ComProtocol/PktMgr/PktMgr.cpp
 )
 target_include_directories(kick_mcu_contract_tests PRIVATE
@@ -61,6 +87,7 @@ target_include_directories(kick_mcu_contract_tests PRIVATE
     ${KICK_REPO_ROOT}/Kick/modules/contracts/dcl
     ${KICK_REPO_ROOT}/ComProtocol/PktMgr
     ${KICK_REPO_ROOT}/Kick/modules/input_events
+    ${KICK_REPO_ROOT}/Kick/modules/hardware/source
 )
 target_link_libraries(kick_mcu_contract_tests PRIVATE kick_mcu_bsp_sim GTest::gtest_main)
 # PktMgr.cpp is host code, not ours: keep its warnings out of the log.
