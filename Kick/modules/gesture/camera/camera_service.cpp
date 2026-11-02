@@ -73,8 +73,12 @@ namespace kick_gesture
                     std::string reply, error;
                     if( cameraRequest( socketPath, "status", reply, error ) )
                     {
-                        backoff.success();
                         status = parseCameraStatus( reply );
+                        // A reply that cannot be read counts as a failure. Otherwise the loop would ask again every 100 ms.
+                        if( status.state == contracts::CameraState::ServiceMissing )
+                            backoff.failure( now );
+                        else
+                            backoff.success();
                     }
                     else
                     {
