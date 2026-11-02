@@ -74,6 +74,16 @@ SAME( c::PAD_SET_BLINKING, Host::EN_PAD_SET_BLINKING );
 SAME( c::PAD_SET_STEP_SINGLE_PAD, Host::EN_PAD_SET_STEP_SINGLE_PAD );
 SAME( c::PAD_SET_STEP_ALL_PAD, Host::EN_PAD_SET_STEP_ALL_PAD );
 
+// Pad and button LED states, colours.
+SAME( c::STATE_OFF, Host::StateOff );
+SAME( c::STATE_ON, Host::StateOn );
+SAME( c::STATE_SAMPLE_ASSIGNED, Host::StateSampleAssigned );
+SAME( c::STATE_SAMPLE_NOT_ASSIGNED, Host::StateSampleNotAssigned );
+SAME( c::STATE_ON_BLINK, Host::StateOnBlink );
+SAME( c::STATE_OFF_BLINK, Host::StateOffBlink );
+SAME( c::kPadColourTrans, Host::PadColourTrans );
+SAME( c::kPadColourCount, Host::PadColourNeutralGrey + 1 );
+
 // Panel layout.
 SAME( c::kBtnShift, Host::EN_SHIFT );
 SAME( c::kBtnSize, Host::SIZE );

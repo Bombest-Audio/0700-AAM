@@ -228,6 +228,44 @@ namespace sim
                 c.count      = (int)count;
                 c.durationUs = ms( timeout );
             }
+            else if( what == "led" )
+            {
+                // expect led <button name or code, spaces allowed> on|off [timeoutMs]
+                std::vector<std::string> rest( t.begin() + 2, t.end() );
+                long                     timeout = 3000;
+                if( rest.size() >= 2 && toInt( rest.back(), timeout ) )
+                    rest.pop_back();
+                const std::string state = rest.empty() ? "" : lower( rest.back() );
+                if( rest.size() < 2 || ( state != "on" && state != "off" ) || timeout < 0 )
+                    return fail( lineNo, "expect led <button> on|off [timeoutMs]" );
+                rest.pop_back();
+                std::string name;
+                for( const auto& w : rest )
+                    name += ( name.empty() ? "" : " " ) + w;
+                const int code = findButton( name );
+                if( code < 0 || code >= (int)output::kButtonLeds )
+                    return fail( lineNo, "no LED for button: " + name );
+                c.kind       = Kind::ExpectLed;
+                c.value      = code;
+                c.want       = state == "on" ? 1 : 0;
+                c.durationUs = ms( timeout );
+            }
+            else if( what == "pad" )
+            {
+                long pad = 0, colour = 0, timeout = 3000;
+                if( t.size() < 4 || t.size() > 5 || !toInt( t[2], pad ) || pad < 1 || pad > 16 )
+                    return fail( lineNo, "expect pad <1-16> <colourId|off> [timeoutMs]" );
+                if( lower( t[3] ) == "off" )
+                    colour = -1;
+                else if( !toInt( t[3], colour ) || colour < 0 || colour >= contract::kPadColourCount )
+                    return fail( lineNo, "pad colour is 0-17 or off" );
+                if( t.size() > 4 && ( !toInt( t[4], timeout ) || timeout < 0 ) )
+                    return fail( lineNo, "timeoutMs is a number of milliseconds" );
+                c.kind       = Kind::ExpectPad;
+                c.value      = (int)pad - 1;
+                c.want       = (int)colour;
+                c.durationUs = ms( timeout );
+            }
             else
                 return fail( lineNo, "unknown expect: " + what );
         }
@@ -327,6 +365,28 @@ namespace sim
                         finished = true;
                     else if( elapsed >= c.durationUs )
                         fault( "host log has " + std::to_string( found ) + " of the " + std::to_string( c.count ) + " expected lines containing '" + c.text + "'" );
+                    break;
+                }
+
+                case Kind::ExpectLed:
+                case Kind::ExpectPad:
+                {
+                    bool ok = false;
+                    if( hooks_.ledTable )
+                    {
+                        const output::LedFrame& table = hooks_.ledTable();
+                        if( c.kind == Kind::ExpectLed )
+                            ok = ( table.buttons[c.value].state != contract::STATE_OFF ) == ( c.want != 0 );
+                        else
+                        {
+                            const output::PadLed& p = table.pads[c.value];
+                            ok = c.want < 0 ? ( p.state == contract::STATE_OFF || p.colour == contract::kPadColourTrans ) : ( p.state != contract::STATE_OFF && p.colour == c.want );
+                        }
+                    }
+                    if( ok )
+                        finished = true;
+                    else if( elapsed >= c.durationUs )
+                        fault( c.kind == Kind::ExpectLed ? "button LED did not reach the expected state" : "pad LED did not reach the expected state" );
                     break;
                 }
 

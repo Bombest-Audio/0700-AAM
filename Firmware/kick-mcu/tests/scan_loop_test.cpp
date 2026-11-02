@@ -261,7 +261,7 @@ TEST_F( Rig, KnobsAndTheStripReachTheWire )
 TEST_F( Rig, UnhandledHostFramesAreCountedNotActedOn )
 {
     handshake();
-    host( contract::PKT_LED, contract::LED_SET_SINGLE_LED, { 3, 1 } );
+    host( contract::PKT_KNOBS, contract::KNOB_ROTARY, { 3, 1 } ); // LED, PAD and SLIDER frames belong to the output decoder now
     step( 1 );
     EXPECT_EQ( 1u, fw->hostFramesIgnored() );
 }

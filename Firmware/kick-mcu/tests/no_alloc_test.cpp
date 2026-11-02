@@ -185,3 +185,66 @@ TEST( NoAlloc, ScanningInputsAndSendingThemDoesNotAllocate )
     EXPECT_GT( fw.link().tx().stats().queued[(size_t)link::Lane::Button], 10u ) << "the run exercised the path";
     EXPECT_GT( fw.link().tx().stats().queued[(size_t)link::Lane::PadKnob], 10u );
 }
+
+// ---- the output path --------------------------------------------------------------------
+
+static_assert( std::is_trivially_destructible<output::LedFrame>::value, "LedFrame must not own heap memory" );
+static_assert( std::is_trivially_destructible<output::ColourTable>::value, "ColourTable must not own heap memory" );
+static_assert( std::is_trivially_destructible<output::GammaTable>::value, "GammaTable must not own heap memory" );
+static_assert( std::is_trivially_destructible<output::RenderedFrame>::value, "RenderedFrame must not own heap memory" );
+
+namespace
+{
+class CountingLeds : public bsp::ILedDriver
+{
+public:
+    void setButton( unsigned, uint8_t ) override {}
+    void setPad( unsigned, uint8_t, uint8_t, uint8_t ) override {}
+    void setStrip( unsigned, uint8_t ) override {}
+    void commit() override { ++commits; }
+    size_t commits{ 0 };
+};
+} // namespace
+
+TEST( NoAlloc, DecodingLedCommandsAndRefreshingDoesNotAllocate )
+{
+    sim::SimClock clock;
+    DiscardUart   uart;
+    sim::SimBoard board;
+    CountingLeds  leds;
+    app::Firmware fw( uart, clock, app::InputHardware{ board.matrix, board.pads, board.encoders, board.strip }, app::OutputHardware{ leds } );
+
+    uart.inject( fromHost( contract::PKT_SYSTEM, contract::SYS_COMM_INIT, { 1 } ) );
+    uart.inject( fromHost( contract::PKT_SYSTEM, contract::SYS_COMM_INIT, { 2 } ) );
+    uart.inject( fromHost( contract::PKT_SYSTEM, contract::SYS_CHECK_COMM_STATUS, { 2 } ) );
+    fw.step();
+
+    Bytes multi{ 1 };
+    for( uint8_t i = 0; i < 16; ++i )
+        multi.push_back( i );
+    Bytes stepAll{ 1 };
+    for( uint8_t i = 0; i < 32; ++i )
+        stepAll.push_back( i );
+    const Bytes frames[] = {
+        fromHost( contract::PKT_PAD, contract::PAD_SET_ALL_MULTI_COLOUR, multi ),
+        fromHost( contract::PKT_PAD, contract::PAD_SET_STEP_ALL_PAD, stepAll ),
+        fromHost( contract::PKT_PAD, contract::PAD_SET_BLINKING, { 3, 4, 12, 7 } ),
+        fromHost( contract::PKT_LED, contract::LED_SET_SINGLE_LED, { 2, 1, 0 } ),
+        fromHost( contract::PKT_LED, contract::LED_SET_ALL, { 1 } ),
+        fromHost( contract::PKT_SLIDER, contract::SLIDER_BAR_LED, { 60 } ),
+        fromHost( contract::PKT_LED, contract::LED_SET_SINGLE_LED, { 1 } ), // malformed
+    };
+
+    alloc_hook::arm();
+    for( int i = 0; i < 4000; ++i )
+    {
+        uart.inject( frames[i % 7] );
+        fw.step();
+        clock.advanceMs( 3 );
+    }
+    const size_t allocations = alloc_hook::disarm();
+
+    EXPECT_EQ( 0u, allocations );
+    EXPECT_GT( leds.commits, 10u ) << "the run really drew";
+    EXPECT_GT( fw.commands().stats().malformed, 100u );
+}

@@ -5,7 +5,8 @@
 // script drives the fake pads, buttons, knobs and touch strip.
 //
 //   kick-mcu-sim [--root DIR] [--tcp PORT] [--script FILE] [--host-log FILE]
-//                [--curve linear|soft|hard] [--tick-us N]
+//                [--curve linear|soft|hard] [--tick-us N] [--dump-leds FILE]
+//   kick-mcu-sim --replay TRACE [--dump-leds FILE]
 //
 //   --root       emulated device root; the pty is linked at DIR/dev/ttymxc0 (default $KICK_EMU_ROOT or ~/KickEmu)
 //   --tcp        listen on this port instead of opening a pty; DIR/surface.port is written
@@ -13,6 +14,9 @@
 //   --host-log   Kick's log file, read by `expect host` in a script
 //   --curve      pad velocity curve (default linear, which is what `pad N velocity` in a script assumes)
 //   --tick-us    main loop period in microseconds (default 250)
+//   --dump-leds  write the final LED table to FILE as one line of JSON ("-" is stdout); see sim/led_json.h
+//   --replay     play the RX lines of an emulator trace (KICK_EMU_TRACE) into the firmware with no serial line,
+//                write the LED table with --dump-leds, and exit. The emulator Surface has the same two options.
 //
 // Frames go to the host one whole frame at a time, at the moment a UART running at 230400 baud
 // would have finished sending them. The host cannot resynchronise (it throws away a read that
@@ -31,10 +35,13 @@
 #include <thread>
 
 #include "kick_mcu/app/firmware.h"
+#include "led_json.h"
 #include "paced_uart.h"
 #include "script_player.h"
 #include "serial_transport.h"
 #include "sim_board.h"
+#include "sim_leds.h"
+#include "trace_replay.h"
 
 using namespace kick_mcu;
 
@@ -107,7 +114,19 @@ std::string readFile( const std::string& path )
 
 void usage()
 {
-    std::fputs( "usage: kick-mcu-sim [--root DIR] [--tcp PORT] [--script FILE] [--host-log FILE] [--curve linear|soft|hard] [--tick-us N]\n", stderr );
+    std::fputs( "usage: kick-mcu-sim [--root DIR] [--tcp PORT] [--script FILE] [--host-log FILE] [--curve linear|soft|hard] [--tick-us N] [--dump-leds FILE]\n"
+                "       kick-mcu-sim --replay TRACE [--dump-leds FILE]\n",
+                stderr );
+}
+
+bool writeLedDump( const std::string& path, const output::LedFrame& table )
+{
+    const std::string json = sim::ledTableJson( table );
+    if( path == "-" )
+        return std::fwrite( json.data(), 1, json.size(), stdout ) == json.size();
+    std::ofstream out( path, std::ios::binary );
+    out << json;
+    return bool( out );
 }
 } // namespace
 
@@ -116,7 +135,7 @@ int main( int argc, char** argv )
     std::string root;
     if( const char* env = std::getenv( "KICK_EMU_ROOT" ) )
         root = env;
-    std::string scriptPath, hostLog, curve = "linear";
+    std::string scriptPath, hostLog, curve = "linear", dumpLeds, replayPath;
     int         tcpPort = 0;
     long        tickUs  = 250;
 
@@ -137,12 +156,48 @@ int main( int argc, char** argv )
             curve = v;
         else if( a == "--tick-us" && ( v = next() ) )
             tickUs = std::atol( v );
+        else if( a == "--dump-leds" && ( v = next() ) )
+            dumpLeds = v;
+        else if( a == "--replay" && ( v = next() ) )
+            replayPath = v;
         else
         {
             usage();
             return 2;
         }
     }
+    if( !replayPath.empty() )
+    {
+        if( !scriptPath.empty() || tcpPort > 0 )
+        {
+            usage();
+            return 2;
+        }
+        std::ifstream in( replayPath, std::ios::binary );
+        if( !in )
+        {
+            std::cerr << "kick-mcu-sim: trace not found: " << replayPath << std::endl;
+            return 2;
+        }
+        std::ostringstream text;
+        text << in.rdbuf();
+        sim::TraceReplayer replayer;
+        if( !replayer.run( text.str() ) )
+        {
+            std::cerr << "kick-mcu-sim: " << replayer.error() << std::endl;
+            return 2;
+        }
+        const auto& stats = replayer.firmware().commands().stats();
+        std::fprintf( stderr, "kick-mcu-sim: replayed %zu RX lines, %zu bytes; LED commands applied %u, malformed %u, out of range %u, unknown %u\n", replayer.rxLines(), replayer.rxBytes(), stats.applied,
+                      stats.malformed, stats.outOfRange, stats.unknown );
+        if( !dumpLeds.empty() && !writeLedDump( dumpLeds, replayer.table() ) )
+        {
+            std::cerr << "kick-mcu-sim: cannot write " << dumpLeds << std::endl;
+            return 2;
+        }
+        return 0;
+    }
+
     if( root.empty() )
     {
         const char* home = std::getenv( "HOME" );
@@ -165,11 +220,12 @@ int main( int argc, char** argv )
     SteadyClock    clock;
     sim::PacedUart uart( clock, 24 );
     sim::SimBoard  board;
+    sim::SimLedDriver ledDriver;
     FrameWriter    writer( *line );
     uart.setSink( [&writer]( uint8_t byte, double ) { writer.onByte( byte ); } );
 
     app::FirmwareConfig config;
-    app::Firmware       firmware( uart, clock, app::InputHardware{ board.matrix, board.pads, board.encoders, board.strip }, config );
+    app::Firmware       firmware( uart, clock, app::InputHardware{ board.matrix, board.pads, board.encoders, board.strip }, app::OutputHardware{ ledDriver }, config );
     const auto preset = curve == "soft" ? input::VelocityCurve::Preset::Soft : curve == "hard" ? input::VelocityCurve::Preset::Hard : input::VelocityCurve::Preset::Linear;
     firmware.scan().pads().curve().load( preset );
 
@@ -188,6 +244,7 @@ int main( int argc, char** argv )
         sim::ScriptHooks hooks;
         hooks.streaming     = [&firmware] { return firmware.link().session().streaming(); };
         hooks.setAftertouch = [&firmware]( bool on ) { firmware.scan().pads().setAftertouchEnabled( on ); };
+        hooks.ledTable      = [&firmware]() -> const output::LedFrame& { return firmware.leds().front(); };
         if( !hostLog.empty() )
             hooks.hostLog = [hostLog] { return readFile( hostLog ); };
         player = std::make_unique<sim::ScriptPlayer>( board, config.scan, hooks );
@@ -241,6 +298,12 @@ int main( int argc, char** argv )
         if( next < now )
             next = now; // fell behind (a stalled host or a busy machine): do not try to catch up
         std::this_thread::sleep_until( next );
+    }
+
+    if( !dumpLeds.empty() && !writeLedDump( dumpLeds, firmware.leds().front() ) )
+    {
+        std::cerr << "kick-mcu-sim: cannot write " << dumpLeds << std::endl;
+        exitCode = exitCode != 0 ? exitCode : 2;
     }
 
     const auto& tx = firmware.link().tx().stats();

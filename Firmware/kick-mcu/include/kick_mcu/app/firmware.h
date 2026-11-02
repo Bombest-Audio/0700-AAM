@@ -6,6 +6,10 @@
 #include "kick_mcu/app/scan_loop.h"
 #include "kick_mcu/bsp/bsp.h"
 #include "kick_mcu/link/link.h"
+#include "kick_mcu/output/blink.h"
+#include "kick_mcu/output/commands.h"
+#include "kick_mcu/output/led_renderer.h"
+#include "kick_mcu/output/led_state.h"
 
 namespace kick_mcu
 {
@@ -15,6 +19,24 @@ namespace app
     {
         link::LinkConfig link{};
         ScanConfig       scan{};
+        output::RenderConfig render{};
+        uint32_t             blinkPeriodMs{ 500 }; ///< one on-off cycle of every blinking LED; 500 is 2 Hz
+    };
+
+    /// The board's output drivers, borrowed.
+    struct OutputHardware
+    {
+        bsp::ILedDriver& leds;
+    };
+
+    /// A driver that shows nothing, for a build with no LEDs attached.
+    class NullLedDriver : public bsp::ILedDriver
+    {
+    public:
+        void setButton( unsigned, uint8_t ) override {}
+        void setPad( unsigned, uint8_t, uint8_t, uint8_t ) override {}
+        void setStrip( unsigned, uint8_t ) override {}
+        void commit() override {}
     };
 
     /// Connects the input layer's sink to a Link: events go into the transmit queue, and are
@@ -36,30 +58,47 @@ namespace app
     };
 
     /// What runs on the MCU. step() is one pass of the main loop: scan, then let the transport
-    /// receive, run the heartbeat and send. The caller decides how often to call it; the latency
-    /// figures in the README assume a pass every 250 microseconds.
+    /// receive, run the heartbeat and send, then refresh the LEDs. The caller decides how often
+    /// to call it; the latency figures in the README assume a pass every 250 microseconds.
     ///
     /// Host commands the firmware acts on so far: PAD_SET_AFTER_TOUCH (turns pad aftertouch on
-    /// or off). The LED, BPM, shutdown and update commands arrive in later changes; until then
-    /// they are counted in hostFramesIgnored().
+    /// or off), and every LED, PAD and SLIDER command (output::CommandDecoder). The BPM,
+    /// shutdown and update commands arrive in a later change; until then they are counted in
+    /// hostFramesIgnored(). LED state is not cleared when the host reconnects: the table keeps
+    /// what it was told, like the emulator Surface.
     class Firmware
     {
     public:
+        /// With LEDs.
+        Firmware( bsp::IUart& uart, const bsp::IClock& clock, InputHardware hardware, OutputHardware outputs, const FirmwareConfig& config = {} );
+
+        /// Without: the LED table still tracks the host, and nothing is drawn.
         Firmware( bsp::IUart& uart, const bsp::IClock& clock, InputHardware hardware, const FirmwareConfig& config = {} );
 
         void step();
 
-        link::Link&   link() { return link_; }
-        ScanLoop&     scan() { return scan_; }
-        uint32_t      hostFramesIgnored() const { return hostFramesIgnored_; }
+        link::Link&            link() { return link_; }
+        ScanLoop&              scan() { return scan_; }
+        uint32_t               hostFramesIgnored() const { return hostFramesIgnored_; }
+        output::LedState&      leds() { return ledState_; }
+        output::CommandDecoder& commands() { return commands_; }
+        output::LedRefresh&    refresh() { return refresh_; }
+        output::BlinkClock&    blink() { return blink_; }
 
     private:
+        Firmware( bsp::IUart& uart, const bsp::IClock& clock, InputHardware hardware, bsp::ILedDriver& leds, const FirmwareConfig& config );
+
         static void onHostFrame( void* context, const link::Frame& frame );
 
-        link::Link link_;
-        LinkSink   sink_;
-        ScanLoop   scan_;
-        uint32_t   hostFramesIgnored_{ 0 };
+        NullLedDriver          nullLeds_;
+        link::Link             link_;
+        LinkSink               sink_;
+        ScanLoop               scan_;
+        output::LedState       ledState_;
+        output::CommandDecoder commands_;
+        output::BlinkClock     blink_;
+        output::LedRefresh     refresh_;
+        uint32_t               hostFramesIgnored_{ 0 };
     };
 
 } // namespace app

@@ -30,10 +30,17 @@ add_executable(kick_mcu_tests
     strip_test.cpp
     scan_loop_test.cpp
     latency_test.cpp
+    commands_test.cpp
+    led_state_test.cpp
+    colours_test.cpp
+    blink_test.cpp
+    current_budget_test.cpp
+    led_renderer_test.cpp
+    leds_firmware_test.cpp
 )
 target_link_libraries(kick_mcu_tests PRIVATE kick_mcu_bsp_sim GTest::gtest_main)
 if(TARGET kick_mcu_sim_lib)
-    target_sources(kick_mcu_tests PRIVATE script_player_test.cpp)
+    target_sources(kick_mcu_tests PRIVATE script_player_test.cpp led_replay_test.cpp)
     target_link_libraries(kick_mcu_tests PRIVATE kick_mcu_sim_lib)
 endif()
 target_compile_options(kick_mcu_tests PRIVATE ${KICK_MCU_WARNINGS})
