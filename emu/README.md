@@ -59,6 +59,25 @@ Keyboard: pads `z x c v / a s d f / q w e r / 1 2 3 4` (bottom row first), space
 
 Script commands (`--script`, `#` comments): `wait ms`, `pad 1-16 [vel] [holdMs]`, `button name|id [holdMs]`, `knob 0|1-16 steps` (negative = CCW), `slider 0-100` (the strip is vertical), `sd in|out`, `usb in|out`, `snapshot file.png`, `expect connected`, `expect pad n colourId|off`, `expect led name on|off`, `expect cv ch minVolts`, `quit [code]`.
 
+## Serial trace
+
+`KICK_EMU_TRACE=<file>` makes the Surface record every byte on the serial line:
+
+```
+# kick-emu-trace v1
+1909.363 RX 4d 54 00 00 02 02 01 05        one read() from Kick, as the bytes arrived
+1909.406 DEC t0 d0 c2 [1]                  a frame the Surface decoded from RX with a good CRC
+1909.454 TX 4d 54 00 00 01 03 01 00 2f 0a  one frame the Surface sent, exact bytes including the trailer
+```
+
+The first column is milliseconds since the file was opened. `RX` and `TX` are hex, `DEC` is `t<type> d<dir> c<cmd> [payload bytes in decimal]`. Lines are flushed as they are written. `emu/tests/traces/smoke.trace` is the smoke script's run, and the MCU firmware tests replay it (`Firmware/kick-mcu`).
+
+To capture another one:
+
+```bash
+KICK_EMU_TRACE=emu/tests/traces/mine.trace emu/run.sh --script emu/tests/smoke.script
+```
+
 ## Control socket
 
 Kick listens on `127.0.0.1:50901` (`KICK_EMU_CONTROL_PORT`), one command per line:
