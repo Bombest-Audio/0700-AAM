@@ -28,6 +28,7 @@ emu/build.sh            # Kick + Surface into build/emu and build/surface
 emu/run.sh              # opens both windows
 emu/run.sh --root DIR   # device root, default ~/KickEmu
 emu/run.sh --script emu/tests/smoke.script   # headless run, exit code = result
+python3 emu/tests/touch.py                    # touchscreen regression test (dialogs, file browser, double tap)
 ```
 
 Needs Xcode, cmake, ninja, python3. On Windows, `emu\build.ps1` uses the CMake and Ninja that ship with Visual Studio 2022 (C++ workload) and `emu\run.ps1` takes `-Script`, `-Root` and `-Port`; clone with `core.autocrlf=false` so the JUCE patch applies. Demo samples need Python 3 on Windows (`winget install Python.Python.3.12`), otherwise they are skipped. The first build fetches JUCE 7.0.12 and other deps through CPM and applies `emu/patches/juce_7.0.12_macos15_sdk.patch`.
@@ -72,9 +73,11 @@ down|move|up <x> <y>  (live pointer, used for the bezel; a leading ! suppresses 
 quit
 ```
 
-The socket is localhost only. A first line that is not a known command closes the connection, which stops browser cross-protocol requests from reaching later lines.
+The socket is localhost only and serves each connection on its own thread, so scripts and tools work while the Surface keeps its bezel connection open. A first line that is not a known command closes the connection, which stops browser cross-protocol requests from reaching later lines.
 
-Taps go straight to the component under the point. Injecting through the window peer fails on macOS unless the window is topmost.
+Taps go through Kick's window peer as mouse events, the same path as real input, so mouse listeners, click-to-focus, modal dialogs and double taps work. Scripted taps carry their intended timestamps: JUCE treats a press longer than 300 ms as a drag, so a busy message thread must not stretch a tap. JUCE on macOS has no touch input sources and drops touch events, which is why they go in as mouse events.
+
+On the unit Kick's window is the only one and always has focus. Here it is minimised behind the Surface, which JUCE reads as hidden and unfocused. Left alone, dialogs open as separate invisible windows and no control ever takes keyboard focus, so the encoder and knobs have nothing to talk to. `emu/patches/juce_7.0.12_emu_kiosk.patch` (applied for `KICK_EMU` builds on every host) makes the minimised window count as showing and focused, keeps focus when the OS window loses it, parents dialogs to the first window when none is active, and stops `Component::contains()` asking the OS which window is on top.
 
 Kick also streams its window to the Surface on TCP `50903` (`KICK_EMU_FRAME_PORT`, `KICK_EMU_FRAME_FPS` default 30) and minimises its own window; `KICK_EMU_SHOW_WINDOW=1` keeps it visible.
 
