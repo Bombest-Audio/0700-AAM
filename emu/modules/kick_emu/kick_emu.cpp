@@ -6,6 +6,7 @@
 
 #include <map>
 #include <mutex>
+#include <utility>
 
 namespace kick_emu
 {
@@ -205,103 +206,71 @@ namespace kick_emu
 
     namespace
     {
+        /// Sends one touch through Kick's window peer, the path input takes on the unit, so mouse listeners,
+        /// click-to-focus, modal blocking and double taps behave as they do there. Calling mouseDown() directly skips
+        /// all of that: tables that listen to their rows ignore taps and nothing ever gets focus.
+        /// The kiosk JUCE patch stops Component::contains() asking the OS what is on top, which would drop every event
+        /// because the window is minimised behind the Surface. Coordinates are in the root component's space, which is
+        /// the peer's space at Kick's 1.0 scale. It goes in as a mouse event: JUCE on macOS has no touch sources
+        /// (canUseTouch() is false) and drops touch events silently.
+        /// TimeMs is the event time JUCE sees. It decides click versus drag (a press over 300 ms is a drag), so scripted
+        /// taps pass their intended times, not the time the message thread got round to them.
+        void injectTouch( juce::Component& root, juce::Point<float> at, bool pressed, juce::int64 timeMs = juce::Time::currentTimeMillis() )
+        {
+            if( auto* peer = root.getPeer() )
+                peer->handleMouseEvent( juce::MouseInputSource::InputSourceType::mouse, at,
+                                        pressed ? juce::ModifierKeys( juce::ModifierKeys::leftButtonModifier ) : juce::ModifierKeys(),
+                                        pressed ? 1.0f : juce::MouseInputSource::defaultPressure, juce::MouseInputSource::defaultOrientation,
+                                        timeMs, {}, 0 );
+        }
+
         /// Presses at From, drags to To in Steps moves, holds for HoldMs, then releases.
-        /// The events go straight to the component under From instead of through
-        /// ComponentPeer::handleMouseEvent. JUCE's macOS peer drops injected events whenever
-        /// another window covers Kick, because NSViewComponentPeer::contains() asks the window
-        /// server what is on top. That would make headless runs and scripted tests flaky.
-        /// Coordinates are in the root component's space.
+        /// Returns the type name of the component under From, for the reply.
         juce::String touch( juce::Component& root, juce::Point<float> from, juce::Point<float> to, int steps, int holdMs )
         {
-            auto* hit = root.getComponentAt( from.roundToInt() );
-            if( hit == nullptr )
-                hit = &root;
+            auto*      hit  = root.getComponentAt( from.roundToInt() );
+            const auto name = juce::String( typeid( hit != nullptr ? *hit : root ).name() );
 
-            juce::Component::SafePointer<juce::Component> target( hit );
-            const auto                                    name = juce::String( typeid( *hit ).name() );
+            holdMs        = juce::jmax( 0, holdMs );
+            const auto t0 = juce::Time::currentTimeMillis();
+            injectTouch( root, from, true, t0 );
+            for( int i = 1; i <= steps; ++i )
+                injectTouch( root, from + ( to - from ) * ( (float)i / (float)steps ), true, t0 + holdMs * i / ( steps + 1 ) );
 
-            const auto source   = juce::Desktop::getInstance().getMainMouseSource();
-            const auto buttons  = juce::ModifierKeys( juce::ModifierKeys::leftButtonModifier );
-            const auto downTime = juce::Time::getCurrentTime();
-
-            auto makeEvent = [target, &root, source, from, downTime]( juce::Point<float> rootPos, juce::ModifierKeys mods, bool dragged ) {
-                auto* c = target.getComponent();
-                return juce::MouseEvent( source, c->getLocalPoint( &root, rootPos ), mods, 1.0f, juce::MouseInputSource::defaultOrientation, juce::MouseInputSource::defaultRotation, 0.0f, 0.0f, c, c, juce::Time::getCurrentTime(), c->getLocalPoint( &root, from ), downTime, 1, dragged );
-            };
-
-            hit->mouseEnter( makeEvent( from, {}, false ) );
-            hit->mouseDown( makeEvent( from, buttons, false ) );
-
-            for( int i = 1; i <= steps && target != nullptr; ++i )
-                target->mouseDrag( makeEvent( from + ( to - from ) * ( (float)i / (float)steps ), buttons, true ) );
-
-            const bool dragged = steps > 0;
-            juce::Timer::callAfterDelay( juce::jmax( 0, holdMs ), [target, makeEvent, to, buttons, dragged] {
-                if( auto* c = target.getComponent() )
-                {
-                    c->mouseUp( makeEvent( to, buttons, dragged ) );
-                    c->mouseExit( makeEvent( to, {}, false ) );
-                }
+            juce::Component::SafePointer<juce::Component> safeRoot( &root );
+            juce::Timer::callAfterDelay( holdMs, [safeRoot, to, t0, holdMs] {
+                if( auto* r = safeRoot.getComponent() )
+                    injectTouch( *r, to, false, t0 + holdMs );
             } );
 
             return name;
         }
-    }
 
-    namespace
-    {
-        /// A pointer that stays down between commands, so the Surface can forward a live drag
+        /// A touch that stays down between commands, so the Surface can forward a live drag
         /// (down, many moves, up) from its screen bezel.
-        struct Pointer
+        bool& pointerIsDown()
         {
-            juce::Component::SafePointer<juce::Component> target;
-            juce::Point<float>                            from;
-            juce::Time                                    downTime;
-        };
-
-        Pointer& pointer()
-        {
-            static Pointer p;
-            return p;
-        }
-
-        juce::MouseEvent pointerEvent( juce::Component& root, juce::Component& c, juce::Point<float> rootPos, bool pressed, bool dragged )
-        {
-            const auto source = juce::Desktop::getInstance().getMainMouseSource();
-            const auto mods   = pressed ? juce::ModifierKeys( juce::ModifierKeys::leftButtonModifier ) : juce::ModifierKeys();
-            auto&      ptr    = pointer();
-            return juce::MouseEvent( source, c.getLocalPoint( &root, rootPos ), mods, 1.0f, juce::MouseInputSource::defaultOrientation, juce::MouseInputSource::defaultRotation, 0.0f, 0.0f, &c, &c, juce::Time::getCurrentTime(), c.getLocalPoint( &root, ptr.from ), ptr.downTime, 1, dragged );
+            static bool down = false;
+            return down;
         }
 
         void pointerUp( juce::Component& root, juce::Point<float> at )
         {
-            auto& ptr = pointer();
-            if( auto* c = ptr.target.getComponent() )
-            {
-                c->mouseUp( pointerEvent( root, *c, at, true, true ) );
-                c->mouseExit( pointerEvent( root, *c, at, false, false ) );
-            }
-            ptr.target = nullptr;
+            if( std::exchange( pointerIsDown(), false ) )
+                injectTouch( root, at, false );
         }
 
         void pointerDown( juce::Component& root, juce::Point<float> at )
         {
             pointerUp( root, at );
-            auto* hit = root.getComponentAt( at.roundToInt() );
-            if( hit == nullptr )
-                hit = &root;
-            auto& ptr    = pointer();
-            ptr.target   = hit;
-            ptr.from     = at;
-            ptr.downTime = juce::Time::getCurrentTime();
-            hit->mouseEnter( pointerEvent( root, *hit, at, false, false ) );
-            hit->mouseDown( pointerEvent( root, *hit, at, true, false ) );
+            pointerIsDown() = true;
+            injectTouch( root, at, true );
         }
 
         void pointerMove( juce::Component& root, juce::Point<float> at )
         {
-            if( auto* c = pointer().target.getComponent() )
-                c->mouseDrag( pointerEvent( root, *c, at, true, true ) );
+            if( pointerIsDown() )
+                injectTouch( root, at, true );
         }
     }
 
@@ -461,10 +430,28 @@ namespace kick_emu
         {
             signalThreadShouldExit();
             listener.close();
-            stopThread( 2000 ); // serve() polls threadShouldExit() every 200 ms
+            stopThread( 2000 );
+            clients.clear(); // each serve() polls threadShouldExit() every 200 ms
         }
 
     private:
+        /// One connection on its own thread. The Surface keeps a connection open for bezel touches, so serving
+        /// clients one at a time would lock scripts and other tools out for as long as the Surface runs.
+        struct Client : juce::Thread
+        {
+            Client( ControlServer& o, std::unique_ptr<juce::StreamingSocket> s )
+                : juce::Thread( "kick_emu control client" ), owner( o ), socket( std::move( s ) )
+            {
+            }
+
+            ~Client() override { stopThread( 2000 ); }
+
+            void run() override { owner.serve( *socket, *this ); }
+
+            ControlServer&                         owner;
+            std::unique_ptr<juce::StreamingSocket> socket;
+        };
+
         void run() override
         {
             while( !threadShouldExit() )
@@ -472,15 +459,20 @@ namespace kick_emu
                 std::unique_ptr<juce::StreamingSocket> c( listener.waitForNextConnection() );
                 if( c == nullptr )
                     continue;
-                serve( *c );
+
+                for( int i = clients.size(); --i >= 0; )
+                    if( !clients[i]->isThreadRunning() )
+                        clients.remove( i );
+
+                clients.add( new Client( *this, std::move( c ) ) )->startThread();
             }
         }
 
-        void serve( juce::StreamingSocket& s )
+        void serve( juce::StreamingSocket& s, juce::Thread& self )
         {
             juce::String pending;
             char         buf[512];
-            while( !threadShouldExit() && s.isConnected() )
+            while( !self.threadShouldExit() && s.isConnected() )
             {
                 const int ready = s.waitUntilReady( true, 200 );
                 if( ready < 0 )
@@ -609,8 +601,9 @@ namespace kick_emu
             return "error unknown command " + cmd;
         }
 
-        juce::StreamingSocket listener;
-        int                   port{ 50901 };
+        juce::StreamingSocket     listener;
+        juce::OwnedArray<Client>  clients; // touched only by the listener thread, then by the destructor after it stops
+        int                       port{ 50901 };
     };
 
     //==============================================================================
