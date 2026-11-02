@@ -62,6 +62,8 @@ Keyboard: pads `z x c v / a s d f / q w e r / 1 2 3 4` (bottom row first), space
 
 Script commands (`--script`, `#` comments): `wait ms`, `pad 1-16 [vel] [holdMs]`, `button name|id [holdMs]`, `knob 0|1-16 steps` (negative = CCW), `slider 0-100` (the strip is vertical), `sd in|out`, `usb in|out`, `snapshot file.png`, `expect connected`, `expect pad n colourId|off`, `expect led name on|off`, `expect cv ch minVolts`, `quit [code]`.
 
+`--replay TRACE` feeds the RX lines of a trace (below) into the Surface with no serial line and exits; `--dump-leds FILE` writes the final LED table as one line of JSON (`-` is stdout), at exit on a live run too. `emu/tools/compare-leds.sh` replays a trace through the Surface and `kick-mcu-sim` and diffs the two tables. `emu/tests/traces/leds.trace` is the LED trace: host frames recorded from the unmodified host plus synthetic LED frames made by `emu/tools/make-led-trace.py`, because the emulated host does not send button LED, blink or step frames by itself.
+
 ## Serial trace
 
 `KICK_EMU_TRACE=<file>` makes the Surface record every byte on the serial line:

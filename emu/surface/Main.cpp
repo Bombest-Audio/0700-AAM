@@ -12,8 +12,14 @@
  *     size + 7 bytes), so frames sent to the app end with '\n'. Frames from the app do not.
  *
  * Usage:
- *   KickSurface [--root <dir>] [--tcp <port>] [--script <file>] [--no-window-focus]
+ *   KickSurface [--root <dir>] [--tcp <port>] [--script <file>] [--no-window-focus] [--dump-leds <file>]
+ *   KickSurface --replay <trace> [--dump-leds <file>]
  *   The tty path is printed as "KICK_SERIAL_PORT=<path>" and linked at <root>/dev/ttymxc0.
+ *
+ * --dump-leds writes the LED model (Surface::ledModelJson) to a file as one line of JSON when the app quits.
+ * --replay plays the RX lines of a KICK_EMU_TRACE file into the frame parser with no window and no serial line,
+ * writes the dump and exits. Firmware/kick-mcu does the same (kick-mcu-sim --replay) and the two files are
+ * compared, see Firmware/kick-mcu/README.md.
  *
  * Environment:
  *   KICK_EMU_TRACE=<file>  write every byte on the serial line to <file> (see the Trace class).
@@ -32,6 +38,7 @@
     #include <unistd.h>
 #endif
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstdio>
@@ -123,6 +130,10 @@ namespace
     constexpr int btnKnobCw     = 30;
     constexpr int btnBack       = 29;
     constexpr int colourTrans   = 15;
+
+    /// Buttons whose LEDs form a radio group: lighting one turns the others off. Inferred, see handleFrame.
+    /// Banks A to H, Stop and Play, Full Level and Half Level.
+    constexpr int radioGroups[][2] = { { 0, 7 }, { 44, 45 }, { 48, 49 } };
     constexpr int knobCenter    = 0;
     constexpr int knobCmdRotary = 0;
     constexpr int knobCmdQlink  = 1;
@@ -315,6 +326,13 @@ namespace
         }
 
         bool isUp() const { return dataFd.load() >= 0 || tcpUp.load(); }
+
+        /// Feeds bytes to the frame parser as if they had arrived on the line. Used by --replay.
+        void feedBytes( const uint8_t* bytes, size_t length )
+        {
+            for( size_t i = 0; i < length; ++i )
+                feed( bytes[i] );
+        }
 
         void send( int type, int cmd, const std::vector<int>& data )
         {
@@ -808,6 +826,25 @@ namespace
         ~Surface() override { link.onFrame = nullptr; }
 
         void setTtyLabel( const juce::String& s ) { ttyLabel = s; }
+
+        /// The LED model as one line of JSON, byte for byte what kick-mcu-sim --dump-leds writes
+        /// (Firmware/kick-mcu/sim/led_json.cpp):
+        ///   {"buttons":[<53 states>],"pads":[[state,colour,offColour,velocity] * 16],"slider":<percent>}
+        juce::String ledModelJson() const
+        {
+            const juce::ScopedLock sl( model.lock );
+            juce::String           out = "{\"buttons\":[";
+            for( int i = 0; i < numButtons; ++i )
+                out << ( i == 0 ? "" : "," ) << model.leds[(size_t)i];
+            out << "],\"pads\":[";
+            for( int i = 0; i < numPads; ++i )
+            {
+                const auto& p = model.pads[(size_t)i];
+                out << ( i == 0 ? "" : "," ) << "[" << p.state << "," << p.colour << "," << p.offColour << "," << p.velocity << "]";
+            }
+            out << "],\"slider\":" << model.sliderPercent << "}\n";
+            return out;
+        }
         const juce::File& deviceRoot() const { return root; }
 
         //==============================================================================
@@ -1574,7 +1611,19 @@ namespace
                     if( f.cmd == LedSingle || f.cmd == LedBlink )
                     {
                         if( juce::isPositiveAndBelow( d( 0 ), numButtons ) )
-                            model.leds[(size_t)d( 0 )] = f.cmd == LedBlink ? StateOnBlink : d( 1 );
+                        {
+                            const int state = f.cmd == LedBlink ? StateOnBlink : d( 1 );
+                            // INFERRED: the app switches banks, Play/Stop and Full/Half Level on and never
+                            // off, so the unit must be clearing the rest of the group. Lighting one member
+                            // turns the others off. Firmware/kick-mcu does the same (output/commands.cpp).
+                            if( state != StateOff )
+                                for( const auto& group : radioGroups )
+                                    if( d( 0 ) >= group[0] && d( 0 ) <= group[1] )
+                                        for( int other = group[0]; other <= group[1]; ++other )
+                                            if( other != d( 0 ) )
+                                                model.leds[(size_t)other] = StateOff;
+                            model.leds[(size_t)d( 0 )] = state;
+                        }
                     }
                     else if( f.cmd == LedAll )
                         model.leds.fill( d( 0 ) );
@@ -1614,20 +1663,23 @@ namespace
                     for( int i = 0; i < numPads; ++i )
                         set( i, d( 0 ), d( 1 ), colourTrans, 127 );
                     break;
-                case PadSetAllMultiColour:
-                    for( int i = 0; i < numPads; ++i )
+                case PadSetAllMultiColour: // state, then one colour per pad; as many pads as the frame has colours
+                    for( int i = 0; i < std::min( numPads, (int)f.data.size() - 1 ); ++i )
                         set( i, d( 0 ), d( 1 + (size_t)i ), colourTrans, 127 );
                     break;
-                case PadSetColourState: // 16 colours, then 16 states
-                    for( int i = 0; i < numPads; ++i )
-                        set( i, d( numPads + (size_t)i ), d( (size_t)i ), colourTrans, 127 );
+                case PadSetColourState: // N colours, then N states
+                    for( int i = 0; i < std::min( numPads, (int)f.data.size() / 2 ); ++i )
+                        set( i, d( f.data.size() / 2 + (size_t)i ), d( (size_t)i ), colourTrans, 127 );
                     break;
                 case PadSetBlinking: set( d( 0 ), d( 1 ), d( 2 ), d( 3 ), 127 ); break;
                 case PadSetStepSingle: set( d( 0 ), d( 1 ), d( 2 ), colourTrans, d( 3 ) ); break;
-                case PadSetStepAll: // state, 16 colours, 16 velocities
-                    for( int i = 0; i < numPads; ++i )
-                        set( i, d( 0 ), d( 1 + (size_t)i ), colourTrans, d( 1 + numPads + (size_t)i ) );
+                case PadSetStepAll: // state, N colours, N velocities
+                {
+                    const int n = ( (int)f.data.size() - 1 ) / 2;
+                    for( int i = 0; i < std::min( numPads, n ); ++i )
+                        set( i, d( 0 ), d( 1 + (size_t)i ), colourTrans, d( 1 + (size_t)n + (size_t)i ) );
                     break;
+                }
                 default: break; // settings, colour mode and aftertouch enable change no LEDs
             }
         }
@@ -1949,6 +2001,13 @@ namespace
             if( tracePath.isNotEmpty() && !link.trace.open( tracePath ) )
                 std::cerr << "KickSurface: cannot open KICK_EMU_TRACE file " << tracePath << std::endl;
 
+            dumpLedsPath = opt( "--dump-leds" );
+            if( opt( "--replay" ).isNotEmpty() )
+            {
+                replayTrace( opt( "--replay" ) );
+                return;
+            }
+
             juce::String ttyLabel;
             // Windows has no pty, so it always serves the line over TCP.
 #if JUCE_WINDOWS
@@ -2017,8 +2076,74 @@ namespace
             }
         }
 
+        /// --replay: no window and no serial line. The RX lines of the trace go through the same frame
+        /// parser and handleFrame() as live traffic, then the LED model is written out and the app quits.
+        /// The frames are queued on the message thread by the parser's callback, so the finish is queued
+        /// behind them.
+        void replayTrace( const juce::String& path )
+        {
+            const juce::File file( juce::File::getCurrentWorkingDirectory().getChildFile( path ) );
+            if( !file.existsAsFile() )
+            {
+                std::cerr << "KickSurface: trace not found: " << file.getFullPathName() << std::endl;
+                setApplicationReturnValue( 2 );
+                quit();
+                return;
+            }
+            juce::StringArray lines;
+            file.readLines( lines );
+
+            replaySurface = std::make_unique<Surface>( link, root );
+            int rxLines   = 0;
+            for( const auto& line : lines )
+            {
+                auto tokens = juce::StringArray::fromTokens( line, " ", "" );
+                tokens.removeEmptyStrings();
+                if( tokens.size() < 2 || tokens[1] != "RX" )
+                    continue;
+                std::vector<uint8_t> bytes;
+                for( int i = 2; i < tokens.size(); ++i )
+                    bytes.push_back( (uint8_t)tokens[i].getHexValue32() );
+                link.feedBytes( bytes.data(), bytes.size() );
+                ++rxLines;
+            }
+            if( rxLines == 0 )
+            {
+                std::cerr << "KickSurface: the trace has no RX lines" << std::endl;
+                setApplicationReturnValue( 2 );
+                quit();
+                return;
+            }
+            std::cerr << "KickSurface: replayed " << rxLines << " RX lines" << std::endl;
+            juce::MessageManager::callAsync( [this] { quit(); });
+        }
+
+        bool writeLedDump( const Surface& surface )
+        {
+            if( dumpLedsPath.isEmpty() )
+                return true;
+            const auto json = surface.ledModelJson();
+            if( dumpLedsPath == "-" )
+            {
+                std::cout << json << std::flush;
+                return true;
+            }
+            const juce::File out( juce::File::getCurrentWorkingDirectory().getChildFile( dumpLedsPath ) );
+            out.deleteFile();
+            return out.replaceWithText( json, false, false, "\n" );
+        }
+
         void shutdown() override
         {
+            if( replaySurface != nullptr || window != nullptr )
+            {
+                if( !writeLedDump( replaySurface != nullptr ? *replaySurface : window->surface() ) )
+                {
+                    std::cerr << "KickSurface: cannot write " << dumpLedsPath << std::endl;
+                    setApplicationReturnValue( 2 );
+                }
+            }
+            replaySurface.reset();
             script.reset();
             events.reset();
             window.reset();
@@ -2052,6 +2177,8 @@ namespace
         std::unique_ptr<Window>        window;
         std::unique_ptr<EventListener> events;
         std::unique_ptr<ScriptRunner>  script;
+        std::unique_ptr<Surface>       replaySurface;
+        juce::String                   dumpLedsPath;
     };
 }
 
