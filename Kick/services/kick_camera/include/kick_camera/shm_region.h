@@ -35,7 +35,7 @@ namespace kickcam
         ShmRegion(const ShmRegion&) = delete;
         ShmRegion& operator=(const ShmRegion&) = delete;
 
-        // Replaces any object of the same name. Readable by everyone (mode 0644), writable by the owner only.
+        // Replaces any object of the same name. Mode 0600: only the owner can map it, since the frames are camera images. Consumers run as the same user.
         bool create(const std::string& name, size_t bytes, std::string& error);
 
         // Maps an existing object read-only.

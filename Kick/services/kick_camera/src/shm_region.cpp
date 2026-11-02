@@ -46,7 +46,7 @@ namespace kickcam
     {
         close();
         shm_unlink(name.c_str());
-        const int fd = shm_open(name.c_str(), O_CREAT | O_EXCL | O_RDWR, 0644);
+        const int fd = shm_open(name.c_str(), O_CREAT | O_EXCL | O_RDWR, 0600);
         if (fd < 0) { error = "shm_open " + name + ": " + std::strerror(errno); return false; }
         if (ftruncate(fd, static_cast<off_t>(bytes)) != 0)
         {

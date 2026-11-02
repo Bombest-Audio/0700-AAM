@@ -37,7 +37,7 @@ The cost of this choice: a reader must follow the seqlock protocol below. That i
 
 Defined in `Kick/services/kick_camera/include/kick_camera/shm_ring.h`. The header file is the reference. In short:
 
-- POSIX shared memory object `/kick-camera` (configurable). Readable by everyone, writable by the service only.
+- POSIX shared memory object `/kick-camera` (configurable). Mode 0600, so only the owning user can map it. kick-gesture and the Kick app run as the same user.
 - One `RingHeader` (64 bytes), then 3 slots. Each slot is a 64-byte `RingSlot` followed by the pixel payload.
 - The ring is sized for the largest allowed frame (`max_size`, default 640x480 YUYV, 600 KB per slot, about 1.8 MB in total), so changing the frame size never resizes the memory.
 
