@@ -53,7 +53,7 @@ namespace kick_gesture
 
     // Sensitivity runs from 1 (least) to 10 (most) and is stored in the preferences.
     //   minimum confidence: 0.96 at 1, 0.80 at 5, 0.60 at 10 (the service never sends below 0.6)
-    //   pinch smoothing time constant: 400 ms at 1, 220 ms at 5, 40 ms at 10
+    //   pinch smoothing time constant: 400 ms at 1, 240 ms at 5, 40 ms at 10
     int   clampSensitivity( int s );
     float minConfidenceForSensitivity( int s );
     float pinchTauMsForSensitivity( int s );
