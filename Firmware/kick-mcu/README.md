@@ -2,7 +2,7 @@
 
 Firmware for the MCU on the KICK's control surface, written as portable C++17 and run on the desktop against a simulated board. The MCU scans the pads, buttons, encoders and touch strip and drives the LEDs. The Kick app on the i.MX8M talks to it over `/dev/ttymxc0` (230400 baud, 8N1, no flow control).
 
-This is the transport layer: framing, CRC, the receive parser, the transmit queue and the connection handshake. Input scanning, LEDs and the system and update commands sit on top of it and come in later changes. The hardware is unreleased and the MCU part is not public, so nothing here has run on a real KICK. The wire format below was read from the host code and checked against the emulator, where the unmodified host talks to the Surface.
+The firmware has a transport layer (framing, CRC, the receive parser, the transmit queue and the connection handshake), an input layer, an output layer for the LEDs, and a system layer for the version, tempo, shutdown and the firmware update. The hardware is unreleased and the MCU part is not public, so nothing here has run on a real KICK. The wire format below was read from the host code and checked against the emulator, where the unmodified host talks to the Surface.
 
 ```
 cmake -S Firmware/kick-mcu -B build/mcu -G Ninja
@@ -54,11 +54,14 @@ include/kick_mcu/bsp/bsp.h       board interfaces: IUart, IClock, and the ones l
 include/kick_mcu/link/           frame_codec, rx_parser, tx_queue, session, link, spsc_ring
 include/kick_mcu/input/          debounce, velocity_curve, pads, encoders, strip, event_sink
 include/kick_mcu/output/         led_state, commands, colours, blink, current_budget, led_renderer
+include/kick_mcu/system/         crc32, flash_layout, image, boot_control, updater, self_check, bpm, shutdown, system
 include/kick_mcu/app/            scan_loop, firmware (the main loop that ties the link to the inputs and the outputs)
 src/                             implementations
 bsp/sim/                         desktop UART, clock, fake panel and a byte-paced 230400 baud UART model
 sim/                             kick-mcu-sim: the firmware on the desktop, plus the script player
 tests/                           googletest suites
+tests/host_updater/             the host's real MCUUpdate against the firmware (opt-in)
+../../tools/mcu-image-header.py  stamps the 64-byte image header onto a hex or binary
 ```
 
 The core has no vendor headers, no heap use and is built with `-fno-exceptions -fno-rtti`. Only `bsp/<mcu>/` changes when the board arrives.
@@ -198,6 +201,16 @@ emu/tools/compare-leds.sh            # runs both and diffs
 
 Where the Surface and the firmware differ on purpose: the Surface accepts a payload shorter than the layout and the firmware rejects it, and the Surface's handling of BLINK_SINGLE, SET_ALL and SLIDER_INDIVIDUAL payloads is a guess where the host never sends them. The trace avoids those.
 
+## System layer
+
+`System` (`system/system.h`) takes the SYSTEM frames the session leaves alone: `GET_SW_VER` (a host request is answered with a 15-byte report: version, image status, `FLASH_VALID`, the payload CRC-32 computed from flash, revision and flags), `BPM` (stored; the blink clock follows it only when `blinkFollowsBpm` is set), `SHUTDOWN` (acknowledge, LEDs off, no more input events, then a power-off request that is a stub until the board exists) and `SW_UPDATE`.
+
+The handshake's `GET_SW_VER` reply carries `[major, minor]` from the running image's header when it verifies, and the build version otherwise. The boot-time self check runs once and never touches the update path.
+
+The update is an A/B scheme with a trial boot: the MCU writes only the slot that is not running, checks the whole image by reading it back, arms a trial with an atomic boot-control record, and the new image has to complete the host handshake before it is confirmed. A reset before that returns to the old image. The protocol, the flash map, the failure matrix and what is not done about image signing are in `docs/mcu-update-protocol.md`.
+
+Build an image the update path accepts with `tools/mcu-image-header.py stamp`.
+
 ## kick-mcu-sim
 
 The firmware, with the fake panel from `bsp/sim/`, on the desktop and headless. It serves the same pty or TCP line as the emulator Surface, so Kick connects to it unchanged. Frames leave at the moment a UART at 230400 baud would have finished sending them, and always whole.
@@ -207,7 +220,7 @@ cmake -S Firmware/kick-mcu -B build/mcu && cmake --build build/mcu
 build/mcu/kick-mcu-sim --root ~/KickEmu --script emu/tests/firmware-input.script --host-log ~/KickEmu/kick.log
 ```
 
-Options: `--root DIR`, `--tcp PORT`, `--script FILE`, `--host-log FILE`, `--curve linear|soft|hard`, `--tick-us N`, `--dump-leds FILE` (write the LED table at exit, `-` for stdout), `--replay TRACE` (play a recorded session into the firmware with no serial line, then exit). Without `--script` it runs until killed. `emu/run.sh --firmware` starts Kick against the built binary; see `emu/README.md`.
+Options: `--root DIR`, `--tcp PORT`, `--script FILE`, `--host-log FILE`, `--curve linear|soft|hard`, `--tick-us N`, `--dump-leds FILE` (write the LED table at exit, `-` for stdout), `--replay TRACE` (play a recorded session into the firmware with no serial line, then exit), `--flash FILE` (keep the MCU flash in a file between runs; a reset from an update restarts the firmware in process), `--factory-hex FILE` (program slot A with a stamped image when the flash file is new), `--boot-report FILE` (write the boot decision as JSON, `-` for stdout) and `--inspect` (print the slots and the boot-control record from `--flash`, then exit). Without `--script` it runs until killed. `emu/run.sh --firmware` starts Kick against the built binary; see `emu/README.md`.
 
 Script commands, one per line, `#` starts a comment:
 
@@ -267,6 +280,10 @@ These numbers hold only under the test's assumptions, which are requirements on 
 | `Sim` | the script player: every command, parse errors with line numbers, `expect host` |
 | `Decode`, `LedState`, `Colours`, `BlinkClock`, `CurrentBudget`, `Render`, `LedRig`, `LedReplay` | every `LedCmd`, `PadCmd` and `SliderCmd` with representative and malformed payloads, the double buffer, colour and gamma tables, blink phase, the current cap, rendering, the firmware's whole output path, and the replay against the Surface's table (set `KICK_SURFACE_BIN` to also run the Surface live) |
 | `Contract`, `PktMgrCrossCheck` | every enum in `contract.h` equals the host's (`static_assert`), and the host's own `PktMgr.cpp` is compiled in and run against the firmware codec in both directions, including a button, pad, knob and strip frame produced by the real scan loop |
+| `Crc32`, `ImageHeader`, `VerifyImage`, `SimFlash`, `BootRig` | the CRC check value, every header field and corruption, a good, erased and flipped-bit image, NOR flash rules and power cuts, the boot-control records (alternation, damage, wraparound, trial and revert, a cut at every byte of a record write) |
+| `UpdateRig`, `UpdatePowerCut` | the update state machine: happy path, bad CRC, truncation, a lying header, a dropped ACK, a repeated or conflicting record, a mid-transfer reset, refusals; and a sweep that cuts power at every flash byte operation of an update plus confirm and checks a verified image always boots |
+| `SysRig`, `SystemContract`, `ImageTool` | version, extended report, BPM, shutdown, trial confirm, an update carried by the real link, the contract enums against the host headers, and the image tool's output through the C++ checker |
+| `HostRig` (opt-in, `-DKICK_MCU_HOST_UPDATER=ON`) | the host's unmodified `MCUUpdate` against the firmware: a full update with trial boot and confirm, a bad CRC, a dropped ACK, and power cuts in the transfer and in the boot-control write. One process per scenario. See `docs/mcu-update-protocol.md` |
 
 `emu/tests/traces/smoke.trace` was captured by running `KICK_EMU_TRACE=emu/tests/traces/smoke.trace emu/run.sh --script emu/tests/smoke.script` against the unmodified host. The format is described in `emu/README.md`. The replay test checks that the parser yields the frames the Surface decoded, that every frame the Surface sent re-encodes to the same bytes, and that the firmware answers the handshake byte for byte as the Surface does.
 
@@ -286,3 +303,6 @@ These numbers hold only under the test's assumptions, which are requirements on 
 - Whether the real MCU clears the other LEDs in a radio group, which the firmware assumes.
 - The strip LED count and what the host's SLIDER_INDIVIDUAL and level modes should look like.
 - The blink look at 500 ms and the velocity-to-brightness mapping of step pads.
+- Everything in `docs/mcu-update-protocol.md` under "Not verified on hardware": the flash map and timing, how a real part behaves on a power cut mid-write, the bootloader split, the reset and power-off calls, and the host's real pacing of DATA frames.
+- Image signing. The update path checks a CRC-32, which catches corruption and not tampering.
+- The host updater harness on Linux. It is built and run on macOS only.
