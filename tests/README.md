@@ -34,15 +34,9 @@ Run one tier with `ctest -L unit`, `-L integration`, `-L ui` or `-L e2e`.
 - `KICK_COVERAGE` adds gcov instrumentation.
 - `KICK_UI_TESTS` enables the JUCE based ui and e2e tiers.
 
-## Known-issue tests
+## Not covered
 
-Tests named `*KnownIssue*` pin current buggy behaviour so a fix shows up as a deliberate test change. Flip the expectation when you fix the bug. Open ones:
-
-- PktMgr: zero-payload frames never complete, leading noise breaks the CRC, a rejected frame wedges the receiver until `ClearReceiver`, the CRC accumulator is a function-local static shared across instances.
-- Panner `LINEAR_4_5DB` is asymmetric at centre.
-- ADSR `LINEAR` attack falls far short of full scale.
-
-Not covered: the `Filter` template has `override` on virtuals that do not exist, so it cannot be instantiated.
+The `Filter` template has `override` on virtuals that do not exist, so it cannot be instantiated.
 
 ## Layout
 

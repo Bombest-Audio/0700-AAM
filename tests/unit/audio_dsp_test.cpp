@@ -28,7 +28,6 @@ namespace
 TEST( Panner, CentreIsSymmetricForEveryLaw )
 {
     using T = Panner<double>::Type;
-    // LINEAR_4_5DB is excluded: see PannerKnownIssue.Linear45dBIsAsymmetricAtCentre.
     for( auto t : { T::BALANCED, T::LINEAR, T::EQUAL_POWER, T::LOG_3DB, T::LOG4_5dB, T::LOG_6DB } )
     {
         auto p = make( t, 0.0 );
@@ -122,13 +121,18 @@ TEST( Panner, ResetRestoresUnityCentre )
     EXPECT_DOUBLE_EQ( p.getGain(), 1.0 );
 }
 
-TEST( PannerKnownIssue, Linear45dBIsAsymmetricAtCentre )
+TEST( Panner, Linear45dBIsSymmetricAndMirrored )
 {
-    // Left gain uses (1 - p*p) where the mirror of the right gain would be (1 - p)^2,
-    // so a centred signal comes out 2.9 dB louder on the left. Flip when fixed.
-    auto p = make( Panner<double>::Type::LINEAR_4_5DB, 0.0 );
-    EXPECT_NEAR( p.getLeft(), 0.8525, 1e-9 );
-    EXPECT_NEAR( p.getRight(), 0.6025, 1e-9 );
+    auto c = make( Panner<double>::Type::LINEAR_4_5DB, 0.0 );
+    EXPECT_NEAR( c.getLeft(), 0.6025, 1e-9 );
+    EXPECT_NEAR( c.getRight(), 0.6025, 1e-9 );
+    for( double pan : { -1.0, -0.5, 0.25, 0.8 } )
+    {
+        auto a = make( Panner<double>::Type::LINEAR_4_5DB, pan );
+        auto b = make( Panner<double>::Type::LINEAR_4_5DB, -pan );
+        EXPECT_NEAR( a.getLeft(), b.getRight(), 1e-9 ) << pan;
+        EXPECT_NEAR( a.getRight(), b.getLeft(), 1e-9 ) << pan;
+    }
 }
 
 // ---------------------------------------------------------------------- LFO
@@ -272,17 +276,16 @@ TEST( ADSR, ExponentialAttackReachesFullScale )
     EXPECT_LE( peak, 1.0001 );
 }
 
-TEST( ADSRKnownIssue, LinearAttackFallsFarShortOfFullScale )
+TEST( ADSR, LinearAttackReachesFullScale )
 {
-    // The LINEAR curve adds (end-start)/N to a per-sample *multiplier*, which is still
-    // exponential growth and tops out near 2.7x the 1e-4 floor instead of 1.0. Flip when fixed.
     ADSR<double> env( ADSR<double>::Type::LINEAR );
     configure( env, 0.01, 0.01, 0.5, 0.01 );
     env.keyOn();
     double peak = 0;
     for( int i = 0; i < 480; ++i )
         peak = std::max( peak, env.process() );
-    EXPECT_LT( peak, 0.01 );
+    EXPECT_GT( peak, 0.95 );
+    EXPECT_LE( peak, 1.05 );
 }
 
 TEST( ADSR, ReachesSustainAndHoldsLevel )
