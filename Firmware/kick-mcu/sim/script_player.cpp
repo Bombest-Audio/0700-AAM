@@ -176,8 +176,8 @@ namespace sim
         else if( cmd == "turn" )
         {
             long knob = 0, steps = 0, interval = 1000;
-            if( t.size() < 3 || t.size() > 4 || !toInt( t[1], knob ) || knob < 0 || knob > 16 || !toInt( t[2], steps ) || steps == 0 )
-                return fail( lineNo, "turn takes 0-16, then a non-zero number of steps (negative is anticlockwise)" );
+            if( t.size() < 3 || t.size() > 4 || !toInt( t[1], knob ) || knob < 0 || knob > 16 || !toInt( t[2], steps ) || steps == 0 || steps > 100000 || steps < -100000 )
+                return fail( lineNo, "turn takes 0-16, then a non-zero number of steps up to 100000 (negative is anticlockwise)" );
             if( t.size() > 3 && ( !toInt( t[3], interval ) || interval < 1 ) )
                 return fail( lineNo, "intervalUs is a number of microseconds" );
 

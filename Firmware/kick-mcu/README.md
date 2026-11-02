@@ -152,7 +152,7 @@ The scan loop compares the debounced state with what the host was last told. A k
 
 A strike starts when a reading reaches `onThreshold`. The peak over the next `velocityWindowUs` (default 1 ms) goes through a 128-entry velocity curve (`linear`, `soft` or `hard`, or a table of the caller's own) and becomes the velocity. The pad-down frame goes out when the window ends, or earlier if the pad releases first, with the peak seen so far. The release threshold is below the on threshold so noise cannot chatter a pad.
 
-Aftertouch is off until the host sends `PAD_SET_AFTER_TOUCH`. It is sent as `PAD_STATE` with state 2. The host only compares the state with 1 and 0, so state 2 updates the pressure without retriggering the note. Pressure in the first 30 ms after a strike is ignored, a new value must differ from the last sent by 2, and each pad sends at most 50 frames a second. Aftertouch is never queued for a released pad. It uses the lowest queue lane, so a storm of it never delays a button.
+Aftertouch is off until the host sends `PAD_SET_AFTER_TOUCH`. It is sent as `PAD_STATE` with state 2. Most host pad handlers compare the state with 1 and 0 only, so state 2 does not retrigger a note there, but two do react: the MIDI control page (`kick_MidiControlTabs.cpp`) sends a note-off for any state that is not 1, and Pad Perform (`kick_PadPerform.cpp`) hands the engine an empty MIDI message. The host turns aftertouch on from those same screens, so both see these frames. This is an open decision, not a settled one. Pressure in the first 30 ms after a strike is ignored, a new value must differ from the last sent by 2, and each pad sends at most 50 frames a second. Aftertouch is never queued for a released pad. It uses the lowest queue lane, so a storm of it never delays a button.
 
 ### Encoders
 
@@ -248,4 +248,4 @@ These numbers hold only under the test's assumptions, which are requirements on 
 - The key matrix, pad sensors, encoders and touch strip: every threshold, debounce time and the encoder transitions per detent are placeholders.
 - Scan CPU time on the target. The latency table assumes 100 us.
 - Velocity feel. The curves are checked for shape, not played.
-- That the host does something sensible with aftertouch frames (state 2). It ignores them in the code I read; I have not seen it act on one.
+- That the host does something sensible with aftertouch frames (state 2). Reading the code, the MIDI control page turns one into a note-off and Pad Perform forwards an empty MIDI message. The framing needs a decision, ideally from the real MCU's behavior.

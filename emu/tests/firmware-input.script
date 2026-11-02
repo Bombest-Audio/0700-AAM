@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Input events from the control surface firmware, checked against the unmodified Kick host.
 #
 #   cmake -S Firmware/kick-mcu -B build/mcu -G Ninja && cmake --build build/mcu
