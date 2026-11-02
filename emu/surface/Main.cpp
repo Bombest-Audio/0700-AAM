@@ -1205,9 +1205,12 @@ namespace
         {
             drawerOpen = open;
             devButton.setButtonText( open ? "hide" : "dev" );
-            setSize( open ? getHeight() + drawerWidth : getHeight(), getHeight() );
+            setSize( widthForHeight( getHeight() ), getHeight() );
             resized();
         }
+
+        /// The panel is square and scales with the height; the drawer beside it keeps a fixed width.
+        int widthForHeight( int h ) const { return h + ( drawerOpen ? drawerWidth : 0 ); }
 
         //==============================================================================
         bool shiftHeld() const { return pressedButtons[btnShift]; }
@@ -1946,15 +1949,56 @@ namespace
             {
                 setContentOwned( content, true );
                 setUsingNativeTitleBar( true );
+
+                // Start at the default size, or smaller when the screen's free area (menu bar and dock
+                // excluded) cannot hold it. The title bar is outside the bounds with a native title bar,
+                // so leave room for it.
+                constrainer.surface = content;
+                constrainer.setMinimumSize( content->widthForHeight( minHeight ), minHeight );
+                setConstrainer( &constrainer );
+                setResizable( true, false );
+                int h = content->getHeight();
+                if( auto* display = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay() )
+                    h = juce::jlimit( minHeight, h, display->userArea.getHeight() - titleBarAllowance );
+                content->setSize( content->widthForHeight( h ), h );
                 centreWithSize( content->getWidth(), content->getHeight() );
                 setVisible( true );
             }
+
+            ~Window() override { setConstrainer( nullptr ); }
 
             void closeButtonPressed() override { juce::JUCEApplication::getInstance()->systemRequestedQuit(); }
             Surface& surface() { return *content; }
 
         private:
-            Surface* content;
+            /// Keeps the window at the Surface's shape while it is resized: dragging a side edge sets the
+            /// height from the new width, anything else sets the width from the new height.
+            struct Constrainer : juce::ComponentBoundsConstrainer
+            {
+                Surface* surface = nullptr;
+
+                void checkBounds( juce::Rectangle<int>& bounds, const juce::Rectangle<int>& previous, const juce::Rectangle<int>& limits,
+                                  bool isStretchingTop, bool isStretchingLeft, bool isStretchingBottom, bool isStretchingRight ) override
+                {
+                    const int extra = surface->widthForHeight( 0 );
+                    if( ( isStretchingLeft || isStretchingRight ) && !isStretchingTop && !isStretchingBottom )
+                        bounds.setHeight( bounds.getWidth() - extra );
+                    bounds.setHeight( juce::jmax( getMinimumHeight(), bounds.getHeight() ) );
+                    if( !limits.isEmpty() )
+                        bounds.setHeight( juce::jmin( bounds.getHeight(), limits.getHeight() ) );
+                    bounds.setWidth( surface->widthForHeight( bounds.getHeight() ) );
+                    if( isStretchingLeft )
+                        bounds.setX( previous.getRight() - bounds.getWidth() );
+                    if( isStretchingTop )
+                        bounds.setY( previous.getBottom() - bounds.getHeight() );
+                }
+            };
+
+            static constexpr int minHeight         = 560;
+            static constexpr int titleBarAllowance = 32;
+
+            Surface*    content;
+            Constrainer constrainer;
         };
 
         juce::File                     root;

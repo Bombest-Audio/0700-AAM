@@ -52,7 +52,7 @@ Everything Kick expects at a Linux path lives under `KICK_EMU_ROOT`:
 
 ## Surface
 
-Mouse: click pads and buttons, drag knobs, drag or scroll the jog wheel (click it for Enter), drag the touch strip, and touch Kick's screen in the bezel. The dev drawer (the `dev` button) holds the velocity and pressure sliders, the SD and USB toggles, the CV meters and the packet log.
+Mouse: click pads and buttons, drag knobs, drag or scroll the jog wheel (click it for Enter), drag the touch strip, and touch Kick's screen in the bezel. The dev drawer (the `dev` button) holds the velocity and pressure sliders, the SD and USB toggles, the CV meters and the packet log. The window opens at full size, or smaller when the screen's free area (menu bar and dock excluded) cannot hold it, and resizes from any edge or corner while keeping the panel square.
 
 Dual-legend keys (BANK A / E, MAIN / GRID and so on) send the printed primary id, and the second legend while Shift is held. Clicking SHIFT latches it. This is an assumption about how the unit's MCU sends the shifted layer, so check it against hardware before relying on it. The unit has only four Q-Link knobs, P1 to P4, so they send knobs 1-4 and the drawer's page buttons move them to 5-8, 9-12 or 13-16. MASTER and REC are analog on the unit and only turn on screen.
 
