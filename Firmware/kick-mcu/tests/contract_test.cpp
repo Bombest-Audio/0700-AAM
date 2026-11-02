@@ -4,6 +4,9 @@
 // host changes an enum, this file stops compiling, which is the point.
 #include <gtest/gtest.h>
 
+#include <string>
+
+#include "button_names.h"
 #include "kick_mcu/contract.h"
 
 // Host headers. dcl_contracts.h includes juce_core.h; tests/stubs provides an empty one.
@@ -71,6 +74,17 @@ SAME( c::PAD_SET_BLINKING, Host::EN_PAD_SET_BLINKING );
 SAME( c::PAD_SET_STEP_SINGLE_PAD, Host::EN_PAD_SET_STEP_SINGLE_PAD );
 SAME( c::PAD_SET_STEP_ALL_PAD, Host::EN_PAD_SET_STEP_ALL_PAD );
 
+// Panel layout.
+SAME( c::kBtnShift, Host::EN_SHIFT );
+SAME( c::kBtnSize, Host::SIZE );
+SAME( c::kBtnColorEdit, Host::EN_COLOR_EDIT );
+SAME( c::kKnobCenter, Host::EN_KNOB_CENTER );
+SAME( c::kQlinkCount, Host::EN_KNOB_16 );
+SAME( c::kPadCount, Host::EN_PAD16 + 1 );
+SAME( c::kPadStateReleased, Host::BTN_RELEASED );
+SAME( c::kPadStatePressed, Host::BTN_PRESSED );
+static_assert( c::kPadStateAftertouch != Host::BTN_RELEASED && c::kPadStateAftertouch != Host::BTN_PRESSED, "aftertouch must not look like a note on or off" );
+
 // Knobs.
 SAME( c::KNOB_ROTARY, Host::EN_KNOB_ROTARY );
 SAME( c::KNOB_QLINK, Host::EN_KNOB_QLINK );
@@ -91,4 +105,29 @@ TEST( Contract, EveryValueMatchesTheHostHeaders )
     // The checks are all static_asserts above. This test exists so a passing build shows up in
     // the test list.
     SUCCEED();
+}
+
+// The simulator's script button names are typed by hand, so check the ones that anchor the table
+// against the host enum. A wrong anchor means every name after it is shifted.
+TEST( Contract, ScriptButtonNamesLineUpWithTheHostEnum )
+{
+    const char* const* n = kick_mcu::sim::buttonNames();
+    EXPECT_EQ( std::string( "Bank A" ), n[Host::EN_BANK_A] );
+    EXPECT_EQ( std::string( "Bank H" ), n[Host::EN_BANK_H] );
+    EXPECT_EQ( std::string( "Main" ), n[Host::EN_MAINMODE] );
+    EXPECT_EQ( std::string( "Tap Tempo" ), n[Host::EN_TAP_TEMPO] );
+    EXPECT_EQ( std::string( "+" ), n[Host::EN_PLUS] );
+    EXPECT_EQ( std::string( "Enter" ), n[Host::EN_KNOB_ENTER] );
+    EXPECT_EQ( std::string( "-" ), n[Host::EN_MINUS] );
+    EXPECT_EQ( std::string( "Knob CCW" ), n[Host::EN_KNOB_CCW] );
+    EXPECT_EQ( std::string( "Knob CW" ), n[Host::EN_KNOB_CW] );
+    EXPECT_EQ( std::string( "Shift" ), n[Host::EN_SHIFT] );
+    EXPECT_EQ( std::string( "Step Seq" ), n[Host::EN_STEP_SEQ] );
+    EXPECT_EQ( std::string( "Record" ), n[Host::EN_RECORD] );
+    EXPECT_EQ( std::string( "Stop" ), n[Host::EN_STOP] );
+    EXPECT_EQ( std::string( "Play" ), n[Host::EN_PLAY] );
+    EXPECT_EQ( std::string( "Full Level" ), n[Host::EN_FULL_LEVEL] );
+    EXPECT_EQ( std::string( "Erase" ), n[Host::EN_ERASE] );
+    EXPECT_EQ( std::string( "Color Edit" ), n[Host::EN_COLOR_EDIT] );
+    EXPECT_EQ( Host::EN_COLOR_EDIT + 1, kick_mcu::sim::kButtonNameCount );
 }

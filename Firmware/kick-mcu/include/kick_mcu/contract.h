@@ -99,6 +99,40 @@ namespace contract
     /// section of the README).
     constexpr uint8_t kCommStageLive = 2;
 
+    // ---- panel layout, values from the host ---------------------------------------------------
+
+    /// DeviceControlContracts::BtnLedSequence: SHIFT is tracked by the host (Controls::shiftBtnState),
+    /// so its press and release must always reach it.
+    constexpr uint8_t kBtnShift = 31;
+    /// BtnLedSequence::SIZE. Codes 0 to 52 are the buttons the LED table covers.
+    constexpr uint8_t kBtnSize = 53;
+    /// BtnLedSequence::EN_COLOR_EDIT sits above SIZE. The input layer scans it too.
+    constexpr uint8_t kBtnColorEdit = 54;
+    /// One past the highest button code the input layer reports.
+    constexpr uint8_t kBtnCodeCount = kBtnColorEdit + 1;
+
+    /// KnobSequence: 0 is the centre jog wheel (cmd KNOB_ROTARY), 1 to 16 are the Q-Link knobs
+    /// (cmd KNOB_QLINK).
+    constexpr uint8_t kKnobCenter = 0;
+    constexpr uint8_t kQlinkCount = 16;
+    constexpr uint8_t kEncoderCount = kQlinkCount + 1;
+
+    /// PadSequence: EN_PAD1 to EN_PAD16.
+    constexpr uint8_t kPadCount = 16;
+
+    /// The pad state byte in a PAD_STATE frame. The host acts on 1 (note on) and 0 (note off) only.
+    constexpr uint8_t kPadStateReleased = 0;
+    constexpr uint8_t kPadStatePressed  = 1;
+    /// Not in dcl_contracts.h: a pressure update on a held pad. State 1 would retrigger the note and
+    /// 0 would end it, so this is a third value. The host handlers that test for 1 and 0 only
+    /// (kick_PadPerform.cpp, kick_AppGrid.cpp) ignore it, and kick_MidiControlTabs.cpp skips the
+    /// note-off for it (padStatePressureUpdate) and forwards only the aftertouch message.
+    constexpr uint8_t kPadStateAftertouch = 2;
+
+    /// Touch strip: 0 means the finger lifted, 1 to 100 is a position from the bottom.
+    constexpr uint8_t kStripLift = 0;
+    constexpr uint8_t kStripMax  = 100;
+
     /// DeviceControlContracts::BtnCmd
     enum BtnCmd : uint8_t
     {

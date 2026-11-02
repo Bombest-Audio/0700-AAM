@@ -7,7 +7,9 @@
 #include <type_traits>
 
 #include "alloc_hook.h"
+#include "kick_mcu/app/firmware.h"
 #include "kick_mcu/link/link.h"
+#include "sim_board.h"
 #include "sim_clock.h"
 #include "sim_uart.h"
 #include "test_support.h"
@@ -116,4 +118,70 @@ TEST( NoAlloc, TheWholeLinkPathDoesNotAllocate )
     EXPECT_EQ( 0u, allocations );
     EXPECT_TRUE( link.session().streaming() );
     EXPECT_GT( uart.written, 2000u * 8 ) << "the loop really did transmit";
+}
+
+// ---- the input path ---------------------------------------------------------------------
+
+static_assert( std::is_trivially_destructible<input::Debouncer>::value, "Debouncer must not own heap memory" );
+static_assert( std::is_trivially_destructible<input::PadScanner>::value, "PadScanner must not own heap memory" );
+static_assert( std::is_trivially_destructible<input::EncoderBank>::value, "EncoderBank must not own heap memory" );
+static_assert( std::is_trivially_destructible<input::StripScanner>::value, "StripScanner must not own heap memory" );
+static_assert( std::is_trivially_destructible<input::VelocityCurve>::value, "VelocityCurve must not own heap memory" );
+
+namespace
+{
+// A UART that takes everything and keeps nothing, so the test's own byte log cannot allocate.
+class DiscardUart : public bsp::IUart
+{
+public:
+    size_t write( bsp::ByteSpan bytes ) override { return bytes.size; }
+    size_t writableBytes() const override { return 256; }
+    void   onByte( bsp::ByteHandler handler, void* context ) override { handler_ = handler; context_ = context; }
+    void   inject( const Bytes& bytes ) { for( uint8_t b : bytes ) handler_( context_, b ); }
+
+private:
+    bsp::ByteHandler handler_{ nullptr };
+    void*            context_{ nullptr };
+};
+} // namespace
+
+TEST( NoAlloc, ScanningInputsAndSendingThemDoesNotAllocate )
+{
+    sim::SimClock clock;
+    DiscardUart   uart;
+    sim::SimBoard board;
+    app::FirmwareConfig cfg;
+    cfg.scan.pads.aftertouchEnabled = true;
+    app::Firmware fw( uart, clock, app::InputHardware{ board.matrix, board.pads, board.encoders, board.strip }, cfg );
+
+    uart.inject( fromHost( contract::PKT_SYSTEM, contract::SYS_COMM_INIT, { 1 } ) );
+    uart.inject( fromHost( contract::PKT_SYSTEM, contract::SYS_COMM_INIT, { 2 } ) );
+    uart.inject( fromHost( contract::PKT_SYSTEM, contract::SYS_CHECK_COMM_STATUS, { 2 } ) );
+    fw.step();
+    ASSERT_TRUE( fw.link().session().streaming() );
+
+    Rng rng( 5 );
+    alloc_hook::arm();
+    for( int t = 0; t < 8000; ++t )
+    {
+        if( t % 40 == 0 )
+            board.matrix.press( rng.below( contract::kBtnCodeCount ) );
+        if( t % 40 == 20 )
+            for( unsigned k = 0; k < contract::kBtnCodeCount; ++k )
+                board.matrix.release( k );
+        for( unsigned p = 0; p < 16; ++p )
+            board.pads.set( p, (uint16_t)( ( t / 50 ) % 2 ? rng.below( 4000 ) : 0 ) );
+        board.encoders.step( rng.below( contract::kEncoderCount ), rng.below( 2 ) != 0 );
+        if( t % 100 < 50 )
+            board.strip.touch( (uint16_t)rng.below( 1024 ) );
+        else
+            board.strip.lift();
+        fw.step();
+        clock.advanceUs( 250 );
+    }
+    const size_t allocations = alloc_hook::disarm();
+
+    EXPECT_EQ( 0u, allocations );
+    EXPECT_GT( fw.link().tx().stats().queued[(size_t)link::Lane::Button], 10u ) << "the run exercised the path";
+    EXPECT_GT( fw.link().tx().stats().queued[(size_t)link::Lane::PadKnob], 10u );
 }

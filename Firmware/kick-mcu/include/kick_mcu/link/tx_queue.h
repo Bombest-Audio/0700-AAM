@@ -67,6 +67,12 @@ namespace link
         /// smaller frame from a lower lane, so priority order is never inverted.
         size_t pump( bsp::IUart& uart );
 
+        /// Removes queued frames of `type` whose first payload byte is `firstByte` from a lane,
+        /// keeping the order of the rest, and returns how many it removed. They are not counted as
+        /// dropped: the caller asked for them to go. A frame already handed to the UART is out of
+        /// reach. The input layer uses it to pull a released pad's aftertouch out of the queue.
+        size_t discard( Lane lane, uint8_t type, uint8_t firstByte );
+
         /// Discards everything queued in a lane without counting it as dropped.
         void clear( Lane lane ) { lanes_[(size_t)lane].count = 0; lanes_[(size_t)lane].head = 0; }
 

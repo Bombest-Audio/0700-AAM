@@ -36,6 +36,13 @@ add_library(kick_mcu_core STATIC
     src/link/tx_queue.cpp
     src/link/session.cpp
     src/link/link.cpp
+    src/input/debounce.cpp
+    src/input/velocity_curve.cpp
+    src/input/pads.cpp
+    src/input/encoders.cpp
+    src/input/strip.cpp
+    src/app/scan_loop.cpp
+    src/app/firmware.cpp
 )
 target_include_directories(kick_mcu_core PUBLIC include)
 target_compile_options(kick_mcu_core PRIVATE ${KICK_MCU_WARNINGS} -fno-exceptions -fno-rtti)
@@ -48,6 +55,19 @@ endif()
 add_library(kick_mcu_bsp_sim INTERFACE)
 target_include_directories(kick_mcu_bsp_sim INTERFACE bsp/sim)
 target_link_libraries(kick_mcu_bsp_sim INTERFACE kick_mcu_core)
+
+# The desktop simulator and the script player it uses. POSIX only: it opens a pty or a TCP socket.
+option(KICK_MCU_BUILD_SIM "Build kick-mcu-sim" ON)
+if(KICK_MCU_BUILD_SIM AND NOT WIN32)
+    add_library(kick_mcu_sim_lib STATIC sim/script_player.cpp sim/serial_transport.cpp)
+    target_include_directories(kick_mcu_sim_lib PUBLIC sim)
+    target_link_libraries(kick_mcu_sim_lib PUBLIC kick_mcu_bsp_sim)
+    target_compile_options(kick_mcu_sim_lib PRIVATE ${KICK_MCU_WARNINGS})
+
+    add_executable(kick-mcu-sim sim/kick-mcu-sim.cpp)
+    target_link_libraries(kick-mcu-sim PRIVATE kick_mcu_sim_lib)
+    target_compile_options(kick-mcu-sim PRIVATE ${KICK_MCU_WARNINGS})
+endif()
 
 if(KICK_MCU_BUILD_TESTS)
     enable_testing()

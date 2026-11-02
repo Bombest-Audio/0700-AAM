@@ -51,6 +51,29 @@ namespace link
         return true;
     }
 
+    size_t TxQueue::discard( Lane lane, uint8_t type, uint8_t firstByte )
+    {
+        LaneRing& ring = lanes_[(size_t)lane];
+
+        // Compact in place. `write` never passes `read`, so a copy never overwrites an entry
+        // that has not been looked at yet, and the order of the kept frames is unchanged.
+        size_t write = 0;
+        for( size_t read = 0; read < ring.count; ++read )
+        {
+            const Entry& e = ring.entries[( ring.head + read ) % ring.capacity];
+            // Frame layout: 'M' 'T' type dir cmd size payload...; the first payload byte is at 6.
+            const bool match = e.length > contract::kHeaderBytes && e.bytes[2] == type && e.bytes[contract::kHeaderBytes] == firstByte;
+            if( match )
+                continue;
+            if( write != read )
+                ring.entries[( ring.head + write ) % ring.capacity] = e;
+            ++write;
+        }
+        const size_t removed = ring.count - write;
+        ring.count           = write;
+        return removed;
+    }
+
     size_t TxQueue::pump( bsp::IUart& uart )
     {
         size_t sent = 0;

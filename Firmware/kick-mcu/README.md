@@ -52,8 +52,11 @@ These constrain the MCU, and the design follows from them:
 include/kick_mcu/contract.h      wire constants and enums, checked against the host headers
 include/kick_mcu/bsp/bsp.h       board interfaces: IUart, IClock, and the ones later layers use
 include/kick_mcu/link/           frame_codec, rx_parser, tx_queue, session, link, spsc_ring
-src/link/                        implementations
-bsp/sim/                         desktop UART and clock for tests
+include/kick_mcu/input/          debounce, velocity_curve, pads, encoders, strip, event_sink
+include/kick_mcu/app/            scan_loop, firmware (the main loop that ties the link to the inputs)
+src/                             implementations
+bsp/sim/                         desktop UART, clock, fake panel and a byte-paced 230400 baud UART model
+sim/                             kick-mcu-sim: the firmware on the desktop, plus the script player
 tests/                           googletest suites
 ```
 
@@ -125,6 +128,97 @@ Owns the receive ring, parser, queue and session, and wires them to an `IUart` a
 - `poll()` runs on the main loop: drain the ring into the parser, apply the inter-byte timeout, run the heartbeat, pump the queue. It never waits, so the scan loop can call it every pass.
 - The ring holds 255 bytes, about 11 ms of line. `poll()` has to run at least that often or bytes are lost and counted in `rxOverruns`.
 
+## Input layer
+
+`ScanLoop::tick()` reads every input once and queues what changed. `Firmware::step()` runs one tick and then `Link::poll()`, and the main loop calls it every 250 us. Nothing in the input layer waits on the UART, allocates, or reads a clock other than the one it is handed.
+
+Event payloads, as `input_events.cpp` decodes them:
+
+| Input | Frame | Payload |
+|---|---|---|
+| Button | `BTN_STATUS` | `[code, state]`, state 1 down and 0 up |
+| Pad | `PAD_STATE` | `[pad, state, velocity, aftertouch]` |
+| Jog wheel (knob 0) | `KNOB_ROTARY` | `[0, dir, steps]` |
+| Knobs 1 to 16 | `KNOB_QLINK` | `[knob, dir, steps]` |
+| Touch strip | slider | `[value]`, 1 to 100, 0 for a lift |
+
+### Buttons
+
+`Debouncer` is an integrator per key. A key counts as pressed after `pressUs` of net closed time (default 1 ms) and as released after `releaseUs` of net open time (default 4 ms). The release window is longer because a late release costs nothing a player can feel. If a tick arrives late, the integration step is capped at half the shorter window, so a stalled main loop cannot turn one bounce into a full press. A stall therefore slows the debounce down instead of speeding it up.
+
+The scan loop compares the debounced state with what the host was last told. A key that differs gets a frame, SHIFT first and then in code order. A refused frame is kept as a difference and retried on the next tick, so a SHIFT release is never lost. A press and release that both happen while the queue refuses cancel out.
+
+### Pads
+
+A strike starts when a reading reaches `onThreshold`. The peak over the next `velocityWindowUs` (default 1 ms) goes through a 128-entry velocity curve (`linear`, `soft` or `hard`, or a table of the caller's own) and becomes the velocity. The pad-down frame goes out when the window ends, or earlier if the pad releases first, with the peak seen so far. The release threshold is below the on threshold so noise cannot chatter a pad.
+
+Aftertouch is off until the host sends `PAD_SET_AFTER_TOUCH`. It is sent as `PAD_STATE` with state 2. Most host pad handlers compare the state with 1 and 0 only, so state 2 does not retrigger a note there, but two do react: the MIDI control page (`kick_MidiControlTabs.cpp`) sends a note-off for any state that is not 1, and Pad Perform (`kick_PadPerform.cpp`) hands the engine an empty MIDI message. The host turns aftertouch on from those same screens, so both see these frames. This is an open decision, not a settled one. Pressure in the first 30 ms after a strike is ignored, a new value must differ from the last sent by 2, and each pad sends at most 50 frames a second. Aftertouch is never queued for a released pad. It uses the lowest queue lane, so a storm of it never delays a button.
+
+### Encoders
+
+`EncoderBank` decodes Gray-code quadrature with a transition table, so a skipped or bounced transition is counted instead of misread. `transitionsPerStep` (default 4) says how many transitions make one detent. Steps in the same direction within one tick leave as one frame with a step count. A reversal inside a tick flushes the steps so far, and if the queue refuses that, the two directions net out.
+
+### Strip
+
+A new position is sent when it differs from the last one sent by `deadband` percent. The lift (value 0) is sent after the strip reads untouched for `liftDebounceUs`, so one dropped reading mid-drag does not end the touch.
+
+### Link state
+
+While the session is not streaming, every input is still read and tracked, but its events are discarded. A key or pad held when the link comes up is not announced, and its release is not sent, so the host never sees half a press.
+
+### Config
+
+All thresholds and times live in `ScanConfig` (`DebounceConfig`, `PadConfig`, `EncoderConfig`, `StripConfig`). The defaults are placeholders. The sensor part, the key matrix and the encoder part are not known until the board exists.
+
+## kick-mcu-sim
+
+The firmware, with the fake panel from `bsp/sim/`, on the desktop and headless. It serves the same pty or TCP line as the emulator Surface, so Kick connects to it unchanged. Frames leave at the moment a UART at 230400 baud would have finished sending them, and always whole.
+
+```bash
+cmake -S Firmware/kick-mcu -B build/mcu && cmake --build build/mcu
+build/mcu/kick-mcu-sim --root ~/KickEmu --script emu/tests/firmware-input.script --host-log ~/KickEmu/kick.log
+```
+
+Options: `--root DIR`, `--tcp PORT`, `--script FILE`, `--host-log FILE`, `--curve linear|soft|hard`, `--tick-us N`. Without `--script` it runs until killed. `emu/run.sh --firmware` starts Kick against the built binary; see `emu/README.md`.
+
+Script commands, one per line, `#` starts a comment:
+
+| Command | Effect |
+|---|---|
+| `wait <ms>` | pause |
+| `press <button> [holdMs]` | button by name (`"Track Mix"`, `+`, `Shift`) or code 0 to 54; hold defaults to 60 |
+| `pad <1-16> [velocity] [holdMs] [aftertouch]` | a strike that reads as `velocity` through the linear curve |
+| `turn <0\|1-16> <steps> [intervalUs]` | positive is clockwise; 0 is the jog wheel |
+| `strip <1-100> [holdMs]` | touch, hold, lift |
+| `aftertouch on\|off` | what the host's `PAD_SET_AFTER_TOUCH` does |
+| `expect streaming [timeoutMs]` | wait for the handshake |
+| `mark-host` | remember how much of the host log exists now |
+| `expect host "<text>" [count] [timeoutMs]` | wait for the host log, after the last mark, to hold `<text>` on at least `count` lines |
+| `quit [code]` | stop with this exit code |
+
+`button`, `knob` and `slider` are accepted as aliases for `press`, `turn` and `strip`. The whole script is parsed before anything runs, so a typo fails on its line number up front. A key release debounces for longer than a press, so two presses with no `wait` between them can reach the host out of order.
+
+`emu/tests/firmware-input.script` runs against the unmodified host and checks its log lines (`Data[0] : N Cmd : C type : T`) for a button, a pad with aftertouch, the jog wheel, a Q-Link knob and the strip.
+
+## Latency
+
+Measured in `tests/latency_test.cpp` on a virtual clock and a UART modelled byte by byte at 230400 baud. "Decision to wire" runs from the start of the tick that decided the event to the moment the last bit of the frame, trailer included, leaves the UART. "Contact to wire" adds the debounce or velocity window and the wait for the next tick.
+
+| Scenario | Decision to wire | Contact to wire |
+|---|---|---|
+| Button, quiet line | 534 us | 1284 us |
+| Pad, quiet line | 621 us | 1621 us |
+| Button during a saturated pad storm (worst of 60) | 1326 us | 2076 us |
+
+Decision to wire is under the 2 ms budget in every scenario, and the test asserts it. The storm figure for contact to wire goes slightly over 2 ms because the 1 ms debounce is included. 16 pads struck at once serialize on the line: the last one leaves about 8.3 ms after the first.
+
+These numbers hold only under the test's assumptions, which are requirements on the BSP:
+
+- The main loop ticks every 250 us.
+- The scan costs 100 us of CPU between sampling and queuing. This is a guess. The clock is virtual, so CPU time is not measured.
+- The UART transmit FIFO is 24 bytes. A larger FIFO adds to the worst case a button can wait behind a frame already committed.
+- The debounce and velocity windows are the defaults above.
+
 ## Tests
 
 | Suite | What it covers |
@@ -137,7 +231,11 @@ Owns the receive ring, parser, queue and session, and wires them to an `IUart` a
 | `Storm` | 16 pads at 1 kHz aftertouch plus strikes and buttons for 3 s on a 230400 baud line: 429 of 429 button frames, 2400 of 2400 pad events, 45029 aftertouch frames dropped and counted |
 | `TraceReplay` | `emu/tests/traces/smoke.trace` through the parser and the full link |
 | `NoAlloc` | a counting `operator new` sees zero allocations across the receive path and the whole link; `static_assert`s that the types are plain storage |
-| `Contract`, `PktMgrCrossCheck` | every enum in `contract.h` equals the host's (`static_assert`), and the host's own `PktMgr.cpp` is compiled in and run against the firmware codec in both directions |
+| `Debounce`, `VelocityCurve`, `Pads`, `Encoders`, `Strip` | each input on its own: bounce rejection, stall handling, curve monotonicity and endpoints, strike windows, aftertouch rules, Gray-code decoding including skips, coalescing and reversal, strip deadband and lift |
+| `ScanLoop` | button order with SHIFT first, retry on refusal, suppression until the link streams, held keys at connect |
+| `Latency` | the table above, plus the 16-pad serialization |
+| `Sim` | the script player: every command, parse errors with line numbers, `expect host` |
+| `Contract`, `PktMgrCrossCheck` | every enum in `contract.h` equals the host's (`static_assert`), and the host's own `PktMgr.cpp` is compiled in and run against the firmware codec in both directions, including a button, pad, knob and strip frame produced by the real scan loop |
 
 `emu/tests/traces/smoke.trace` was captured by running `KICK_EMU_TRACE=emu/tests/traces/smoke.trace emu/run.sh --script emu/tests/smoke.script` against the unmodified host. The format is described in `emu/README.md`. The replay test checks that the parser yields the frames the Surface decoded, that every frame the Surface sent re-encodes to the same bytes, and that the firmware answers the handshake byte for byte as the Surface does.
 
@@ -147,3 +245,7 @@ Owns the receive ring, parser, queue and session, and wires them to an `IUart` a
 - Interrupt and DMA behaviour of the real UART: ring depth, poll interval, TX FIFO size and the button latency that follows from it.
 - That the host really tolerates the 10 ms inter-byte timeout and the `'\n'` trailer on silicon the way it does in the emulator. The trailer rule comes from the host's receive loop, not from a captured trace of a real unit.
 - The MCU part, its clock and its UART peripheral.
+- The key matrix, pad sensors, encoders and touch strip: every threshold, debounce time and the encoder transitions per detent are placeholders.
+- Scan CPU time on the target. The latency table assumes 100 us.
+- Velocity feel. The curves are checked for shape, not played.
+- That the host does something sensible with aftertouch frames (state 2). Reading the code, the MIDI control page turns one into a note-off and Pad Perform forwards an empty MIDI message. The framing needs a decision, ideally from the real MCU's behavior.
