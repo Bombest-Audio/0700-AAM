@@ -225,9 +225,9 @@ protected:
 
     std::string stampedHex() const { return KICK_STAMPED_HEX; }
 
-    /// A copy of the stamped hex with one data digit changed in the last data record, which
-    /// leaves the file well formed to the host (it does not check record checksums) and breaks
-    /// the payload CRC the MCU checks.
+    /// A copy of the stamped hex with one data digit changed in the last data record and the
+    /// record checksum rewritten to match. The host checks record checksums, so the file stays
+    /// well formed to it, and the change breaks the payload CRC the MCU checks.
     std::string corruptedHex()
     {
         std::ifstream       in( stampedHex() );
@@ -239,6 +239,13 @@ protected:
             {
                 char& digit = lines[i][10];
                 digit       = digit == '0' ? '1' : '0';
+                // Intel HEX checksum: two's complement of the sum of every byte before it.
+                int sum = 0;
+                for( size_t pos = 1; pos + 2 < lines[i].size(); pos += 2 )
+                    sum += std::stoi( lines[i].substr( pos, 2 ), nullptr, 16 );
+                char checksum[3];
+                std::snprintf( checksum, sizeof( checksum ), "%02X", ( -sum ) & 0xFF );
+                lines[i].replace( lines[i].size() - 2, 2, checksum );
                 break;
             }
         const auto dir = std::filesystem::temp_directory_path() / ( "kick-host-updater-" + std::to_string( ::getpid() ) );
@@ -318,16 +325,15 @@ TEST_F( HostRig, HappyPath )
     std::fprintf( stderr, "flash byte operations in a full update: %llu\n", (unsigned long long)updateOps );
 }
 
-TEST_F( HostRig, ImageWithABadCrcIsRefusedAndTheHostStillReportsSuccess )
+TEST_F( HostRig, ImageWithABadCrcIsRefusedAndTheHostReportsFailure )
 {
     shim.start( corruptedHex() );
     ASSERT_TRUE( pumpUntil( [&] { return shim.finished(); } ) );
     shim.join();
 
-    // The host sends END and returns without waiting for the MCU: it claims success for an image
-    // the MCU has thrown away. This is the host's behaviour today (no END acknowledgement is read);
-    // the assertion pins it so a fix on the host side shows up here.
-    EXPECT_EQ( kHostSuccess, shim.result() );
+    // The host sends END and waits for the MCU's answer. The MCU refuses the image with FAILURE, and
+    // the host reports the update as failed instead of claiming success.
+    EXPECT_EQ( kHostFailure, shim.result() );
     runSimulatedMs( 700 );
 
     ASSERT_FALSE( mcuReplies.empty() );
@@ -342,7 +348,7 @@ TEST_F( HostRig, ImageWithABadCrcIsRefusedAndTheHostStillReportsSuccess )
 
 TEST_F( HostRig, ADroppedAckIsEndedByTheMcuTimeoutAndTheHostFails )
 {
-    // Lose the ACK of the third DATA record. The host waits for it for ever; the MCU waits for
+    // Lose the ACK of the third DATA record. The host waits for it (up to its own timeout); the MCU waits for
     // the next record and gives up after idleTimeoutMs, and its FAILURE frees the host.
     int dataAcks = 0;
     dropReply    = [&]( const Decoded& d ) {

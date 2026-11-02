@@ -68,7 +68,7 @@ endif()
 # One process per scenario: the host updater cannot run twice in a process (see the test file).
 foreach(_scenario
         HappyPath
-        ImageWithABadCrcIsRefusedAndTheHostStillReportsSuccess
+        ImageWithABadCrcIsRefusedAndTheHostReportsFailure
         ADroppedAckIsEndedByTheMcuTimeoutAndTheHostFails
         PowerLostInTheMiddleOfTheTransferLeavesTheOldImageRunning
         PowerLostWhileErasingTheBootControlCopyKeepsTheOldImage
