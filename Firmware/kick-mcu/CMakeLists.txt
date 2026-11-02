@@ -45,6 +45,11 @@ add_library(kick_mcu_core STATIC
     src/output/commands.cpp
     src/output/current_budget.cpp
     src/output/led_renderer.cpp
+    src/system/image.cpp
+    src/system/boot_control.cpp
+    src/system/updater.cpp
+    src/system/self_check.cpp
+    src/system/system.cpp
     src/app/scan_loop.cpp
     src/app/firmware.cpp
 )
@@ -63,7 +68,7 @@ target_link_libraries(kick_mcu_bsp_sim INTERFACE kick_mcu_core)
 # The desktop simulator and the script player it uses. POSIX only: it opens a pty or a TCP socket.
 option(KICK_MCU_BUILD_SIM "Build kick-mcu-sim" ON)
 if(KICK_MCU_BUILD_SIM AND NOT WIN32)
-    add_library(kick_mcu_sim_lib STATIC sim/script_player.cpp sim/serial_transport.cpp sim/led_json.cpp sim/trace_replay.cpp)
+    add_library(kick_mcu_sim_lib STATIC sim/script_player.cpp sim/serial_transport.cpp sim/led_json.cpp sim/trace_replay.cpp sim/hex_image.cpp sim/system_json.cpp)
     target_include_directories(kick_mcu_sim_lib PUBLIC sim)
     target_link_libraries(kick_mcu_sim_lib PUBLIC kick_mcu_bsp_sim)
     target_compile_options(kick_mcu_sim_lib PRIVATE ${KICK_MCU_WARNINGS})

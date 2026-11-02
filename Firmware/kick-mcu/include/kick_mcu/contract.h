@@ -201,6 +201,21 @@ namespace contract
         KNOB_CLOCKWISE,
     };
 
+    /// Subcommands of SYS_SW_UPDATE, the first payload byte. The host's copy is
+    /// mt::MCUUpdateAction in Kick/modules/hardware/source/kick_Hwcommon.h (not in dcl_contracts.h);
+    /// tests/system_contract_test.cpp checks them against it.
+    enum SwUpdateCmd : uint8_t
+    {
+        SW_UPDATE_INITIATE = 0,      ///< host to MCU: start
+        SW_UPDATE_BEGIN_TRANSFER,    ///< MCU to host: ready for data
+        SW_UPDATE_DATA,              ///< host to MCU: one Intel HEX data record
+        SW_UPDATE_DATABASE,          ///< host to MCU: Intel HEX extended linear address record
+        SW_UPDATE_END,               ///< host to MCU: all records sent
+        SW_UPDATE_ACK,               ///< MCU to host: record accepted
+        SW_UPDATE_FAILURE,           ///< MCU to host: transfer abandoned
+        SW_UPDATE_IDLE,              ///< host-internal; never on the wire
+    };
+
     /// DeviceControlContracts::SliderCmd
     enum SliderCmd : uint8_t
     {
