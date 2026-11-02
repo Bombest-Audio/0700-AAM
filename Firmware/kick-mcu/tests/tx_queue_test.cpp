@@ -210,3 +210,59 @@ TEST( TxQueue, CountsAFrameThatTheUartOnlyPartlyAccepted )
     EXPECT_EQ( 2u, q.stats().partialWrites );
     EXPECT_TRUE( q.empty() );
 }
+
+TEST( TxQueue, DiscardRemovesMatchingFramesAndKeepsTheOrderOfTheRest )
+{
+    TxQueue q;
+    enqueuePad( q, Lane::Aftertouch, 3, 2, 0, 10 );
+    enqueuePad( q, Lane::Aftertouch, 5, 2, 0, 11 );
+    enqueuePad( q, Lane::Aftertouch, 3, 2, 0, 12 );
+    enqueuePad( q, Lane::Aftertouch, 7, 2, 0, 13 );
+    enqueuePad( q, Lane::Aftertouch, 3, 2, 0, 14 );
+    enqueueButton( q, 3, 1 ); // another lane, same first byte: untouched
+
+    EXPECT_EQ( 3u, q.discard( Lane::Aftertouch, contract::PKT_PAD, 3 ) );
+    EXPECT_EQ( 2u, q.depth( Lane::Aftertouch ) );
+    EXPECT_EQ( 1u, q.depth( Lane::Button ) );
+    EXPECT_EQ( 0u, q.stats().dropped[(size_t)Lane::Aftertouch] ) << "a requested discard is not a drop";
+
+    sim::SimUart uart( 4096 );
+    q.pump( uart );
+    uart.drain();
+    const auto frames = framesOnWire( uart );
+    ASSERT_EQ( 3u, frames.size() );
+    EXPECT_EQ( contract::PKT_BUTTON, frames[0].type );
+    EXPECT_EQ( 5, frames[1].payload[0] );
+    EXPECT_EQ( 7, frames[2].payload[0] );
+}
+
+TEST( TxQueue, DiscardWorksWhenTheLaneHasWrappedAround )
+{
+    TxQueue      q;
+    sim::SimUart uart( 4096 );
+    const size_t depth = TxQueue::kLaneDepth[(size_t)Lane::Aftertouch];
+    for( size_t i = 0; i < depth - 2; ++i )
+        enqueuePad( q, Lane::Aftertouch, 1, 2, 0, 0 );
+    q.pump( uart ); // empties it and leaves head in the middle of the ring
+    uart.drain();
+    uart.clearWire();
+    for( size_t i = 0; i < depth; ++i )
+        enqueuePad( q, Lane::Aftertouch, (uint8_t)( i % 2 ), 2, 0, (uint8_t)i );
+
+    EXPECT_EQ( depth / 2, q.discard( Lane::Aftertouch, contract::PKT_PAD, 0 ) );
+    q.pump( uart );
+    uart.drain();
+    const auto frames = framesOnWire( uart );
+    ASSERT_EQ( depth / 2, frames.size() );
+    for( const auto& f : frames )
+        EXPECT_EQ( 1, f.payload[0] );
+}
+
+TEST( TxQueue, DiscardOfNothingChangesNothing )
+{
+    TxQueue q;
+    enqueuePad( q, Lane::Aftertouch, 2, 2, 0, 1 );
+    EXPECT_EQ( 0u, q.discard( Lane::Aftertouch, contract::PKT_PAD, 9 ) );
+    EXPECT_EQ( 0u, q.discard( Lane::Aftertouch, contract::PKT_BUTTON, 2 ) );
+    EXPECT_EQ( 1u, q.depth( Lane::Aftertouch ) );
+}

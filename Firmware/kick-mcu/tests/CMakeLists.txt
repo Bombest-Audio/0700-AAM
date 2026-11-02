@@ -23,6 +23,13 @@ add_executable(kick_mcu_tests
     storm_test.cpp
     trace_replay_test.cpp
     no_alloc_test.cpp
+    debounce_test.cpp
+    velocity_curve_test.cpp
+    pads_test.cpp
+    encoders_test.cpp
+    strip_test.cpp
+    scan_loop_test.cpp
+    latency_test.cpp
 )
 target_link_libraries(kick_mcu_tests PRIVATE kick_mcu_bsp_sim GTest::gtest_main)
 target_compile_options(kick_mcu_tests PRIVATE ${KICK_MCU_WARNINGS})

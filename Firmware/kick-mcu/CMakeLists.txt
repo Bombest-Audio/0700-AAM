@@ -36,6 +36,13 @@ add_library(kick_mcu_core STATIC
     src/link/tx_queue.cpp
     src/link/session.cpp
     src/link/link.cpp
+    src/input/debounce.cpp
+    src/input/velocity_curve.cpp
+    src/input/pads.cpp
+    src/input/encoders.cpp
+    src/input/strip.cpp
+    src/app/scan_loop.cpp
+    src/app/firmware.cpp
 )
 target_include_directories(kick_mcu_core PUBLIC include)
 target_compile_options(kick_mcu_core PRIVATE ${KICK_MCU_WARNINGS} -fno-exceptions -fno-rtti)

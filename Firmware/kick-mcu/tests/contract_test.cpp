@@ -71,6 +71,17 @@ SAME( c::PAD_SET_BLINKING, Host::EN_PAD_SET_BLINKING );
 SAME( c::PAD_SET_STEP_SINGLE_PAD, Host::EN_PAD_SET_STEP_SINGLE_PAD );
 SAME( c::PAD_SET_STEP_ALL_PAD, Host::EN_PAD_SET_STEP_ALL_PAD );
 
+// Panel layout.
+SAME( c::kBtnShift, Host::EN_SHIFT );
+SAME( c::kBtnSize, Host::SIZE );
+SAME( c::kBtnColorEdit, Host::EN_COLOR_EDIT );
+SAME( c::kKnobCenter, Host::EN_KNOB_CENTER );
+SAME( c::kQlinkCount, Host::EN_KNOB_16 );
+SAME( c::kPadCount, Host::EN_PAD16 + 1 );
+SAME( c::kPadStateReleased, Host::BTN_RELEASED );
+SAME( c::kPadStatePressed, Host::BTN_PRESSED );
+static_assert( c::kPadStateAftertouch != Host::BTN_RELEASED && c::kPadStateAftertouch != Host::BTN_PRESSED, "aftertouch must not look like a note on or off" );
+
 // Knobs.
 SAME( c::KNOB_ROTARY, Host::EN_KNOB_ROTARY );
 SAME( c::KNOB_QLINK, Host::EN_KNOB_QLINK );
