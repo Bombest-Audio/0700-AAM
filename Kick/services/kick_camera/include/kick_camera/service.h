@@ -45,7 +45,7 @@ namespace kickcam
     // Privacy by construction:
     //  - After start() the camera is closed. Only "enable" opens the device.
     //  - ring "capturing" is raised before the device is opened and lowered after it is closed, so the on-screen
-//    indicator can never read "off" while the hardware is on.
+    //    indicator can never read "off" while the hardware is on.
     //  - "disable" (and any source failure) closes the device and zeroes every pixel in the ring.
     //  - Frames reach disk only when cfg.debugDumpDir is set, and then only debugDumpMax of them.
     //

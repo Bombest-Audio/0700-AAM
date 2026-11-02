@@ -43,6 +43,10 @@ namespace kickcam
 
         void setNonBlocking(int fd) { ::fcntl(fd, F_SETFL, ::fcntl(fd, F_GETFL, 0) | O_NONBLOCK); }
 
+        // The pipe source forks a helper (ffmpeg) while this server is running. Without close-on-exec the helper
+        // would inherit the listening socket and keep it open after the service dies.
+        void setCloseOnExec(int fd) { ::fcntl(fd, F_SETFD, ::fcntl(fd, F_GETFD, 0) | FD_CLOEXEC); }
+
         bool makeAddress(const std::string& path, sockaddr_un& addr)
         {
             if (path.size() >= sizeof(addr.sun_path)) return false;
@@ -72,6 +76,7 @@ namespace kickcam
             error = std::string("socket: ") + std::strerror(errno);
             return false;
         }
+        setCloseOnExec(listenFd_);
         ::unlink(path.c_str());
         // Create the socket file with no permissions for anyone else, so there is no window where it is open.
         const mode_t oldMask = ::umask(0177);
@@ -95,6 +100,8 @@ namespace kickcam
         }
         wakeRead_ = pipeFds[0];
         wakeWrite_ = pipeFds[1];
+        setCloseOnExec(wakeRead_);
+        setCloseOnExec(wakeWrite_);
         setNonBlocking(listenFd_);
 
         path_ = path;
@@ -142,6 +149,7 @@ namespace kickcam
                     else
                     {
                         setNonBlocking(fd);
+                        setCloseOnExec(fd);
                         clients[fd];
                     }
                 }
