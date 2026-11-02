@@ -44,10 +44,14 @@ IOWeight=10
 MemorySwapMax=0
 MemoryMax=192M
 
-# Privacy: no network at all. Frames come in through shared memory and events go out through a Unix socket.
-PrivateNetwork=yes
+# Privacy: no network beyond this machine. Frames come in through shared memory and events go out over TCP on
+# loopback to the Kick app (events_ipc). PrivateNetwork is off because a private network namespace has no route to the
+# app's listener. IPAddressDeny=any with IPAddressAllow=127.0.0.0/8 keeps every other address unreachable, and AF_INET
+# is the only family added to AF_UNIX. This is untested on the unit; check it with `systemd-analyze security` and a
+# real connection before shipping.
 IPAddressDeny=any
-RestrictAddressFamilies=AF_UNIX
+IPAddressAllow=127.0.0.0/8
+RestrictAddressFamilies=AF_UNIX AF_INET
 ProtectSystem=strict
 ReadWritePaths=/run /dev/shm
 ProtectHome=yes

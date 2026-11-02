@@ -33,7 +33,7 @@ CPU comes from `/proc/self/stat` with a `getrusage` fallback. Temperature comes 
 
 ## Privacy
 
-The service has no network (`PrivateNetwork=yes`, `RestrictAddressFamilies=AF_UNIX`). It does not open the camera, only the shared memory. It never writes a pixel. `--record` writes hand geometry only (21 points and two scores per frame), which is enough to replay a session and not enough to rebuild an image.
+The service reaches only this machine: it may connect to loopback (`IPAddressDeny=any`, `IPAddressAllow=127.0.0.0/8`, `RestrictAddressFamilies=AF_UNIX AF_INET`) and nothing else. That replaced `PrivateNetwork=yes` so it can reach the Kick app's local listener, and it is not yet tested on the unit. It does not open the camera, only the shared memory. It never writes a pixel. `--record` writes hand geometry only (21 points and two scores per frame), which is enough to replay a session and not enough to rebuild an image.
 
 ## Record and replay
 

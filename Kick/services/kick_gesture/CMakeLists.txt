@@ -73,7 +73,8 @@ if(KICK_GESTURE_ONNX_AVAILABLE)
 endif()
 
 add_library(kick_gesture_core STATIC ${KICK_GESTURE_SOURCES})
-target_include_directories(kick_gesture_core PUBLIC include)
+# The reconnect backoff is shared with the Kick app side and tested there (Kick/modules/gesture/tests).
+target_include_directories(kick_gesture_core PUBLIC include ${CMAKE_CURRENT_SOURCE_DIR}/../../modules/gesture/core)
 target_compile_options(kick_gesture_core PUBLIC -Wall -Wextra)
 target_link_libraries(kick_gesture_core PUBLIC kick_camera_core Threads::Threads)
 if(KICK_GESTURE_ONNX_AVAILABLE)

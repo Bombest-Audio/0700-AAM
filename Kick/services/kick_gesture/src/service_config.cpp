@@ -19,6 +19,7 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 #include "kick_gesture/service_config.h"
+#include "kick_gesture/sink.h"
 
 #include <cerrno>
 #include <cmath>
@@ -104,6 +105,13 @@ namespace kickgest
             c.eventsStdout = b;
         }
         else if (key == "events_socket") c.eventsSocket = value;
+        else if (key == "events_ipc")
+        {
+            std::string host;
+            uint16_t port = 0;
+            if (!value.empty() && !parseIpcEndpoint(value, host, port)) return bad("host:port with a dotted IPv4 host, for example 127.0.0.1:50501");
+            c.eventsIpc = value;
+        }
         else if (key == "events_file") c.eventsFile = value;
         else if (key == "record") c.record = value;
         else if (key == "status_interval_ms")
