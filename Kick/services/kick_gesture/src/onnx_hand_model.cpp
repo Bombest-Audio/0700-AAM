@@ -190,6 +190,14 @@ namespace kickgest
             d.run(*d.palm, d.palmIn, d.palmOutNames, d.palmInput.data(), kPalmSize, palmOut);
             d.times.palmMs = msSince(t0);
 
+            // Read what the networks returned, not what create() was told to expect.
+            const size_t boxIdx = static_cast<size_t>(d.palmBoxOut);
+            if (palmOut.size() != 2 || palmOut[boxIdx].GetTensorTypeAndShapeInfo().GetElementCount() < static_cast<size_t>(kPalmAnchors) * 18u
+                || palmOut[1 - boxIdx].GetTensorTypeAndShapeInfo().GetElementCount() < static_cast<size_t>(kPalmAnchors))
+            {
+                error = "palm model returned fewer values than the anchor table";
+                return false;
+            }
             const float* boxes = palmOut[static_cast<size_t>(d.palmBoxOut)].GetTensorData<float>();
             const float* scores = palmOut[static_cast<size_t>(1 - d.palmBoxOut)].GetTensorData<float>();
             const std::vector<Anchor>& anchors = palmAnchors();
@@ -272,6 +280,12 @@ namespace kickgest
                 d.run(*d.landmark, d.lmIn, d.lmOutNames, d.handInput.data(), kHandSize, lmOut);
                 d.times.landmarkMs += msSince(t0);
 
+                if (lmOut.size() != 4 || lmOut[0].GetTensorTypeAndShapeInfo().GetElementCount() < static_cast<size_t>(kNumLandmarks) * 3
+                    || lmOut[1].GetTensorTypeAndShapeInfo().GetElementCount() < 1 || lmOut[2].GetTensorTypeAndShapeInfo().GetElementCount() < 1)
+                {
+                    error = "landmark model returned fewer values than 21 points";
+                    return false;
+                }
                 const float* lm = lmOut[0].GetTensorData<float>();
                 const float conf = lmOut[1].GetTensorData<float>()[0];
                 const float handed = lmOut[2].GetTensorData<float>()[0];

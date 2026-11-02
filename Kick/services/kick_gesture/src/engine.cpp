@@ -256,7 +256,7 @@ namespace kickgest
                     pinchArming_ = false;
                     pinchReleasing_ = false;
                     pinchLastValue_ = value;
-                                emit(GestureType::PinchStart, true, value, meanScoreSince(pinchArmSince_), t, out);
+                    emit(GestureType::PinchStart, true, value, meanScoreSince(pinchArmSince_), t, out);
                 }
             }
             return true;
@@ -289,7 +289,7 @@ namespace kickgest
             else
             {
                 pinchLastValue_ = value;
-                        emit(GestureType::PinchChange, true, value, meanScoreSince(t > 300 ? t - 300 : 0), t, out);
+                    emit(GestureType::PinchChange, true, value, meanScoreSince(t > 300 ? t - 300 : 0), t, out);
             }
         }
         return true;

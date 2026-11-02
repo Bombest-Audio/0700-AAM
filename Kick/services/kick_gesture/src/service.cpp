@@ -75,18 +75,29 @@ namespace kickgest
 
     bool GestureService::handleFrame(const kickcam::FrameMeta& meta)
     {
+        // A frame that cannot be read counts as a frame without a hand, so an open pinch still gets its pinch_end
+        // after lost_ms instead of staying open for as long as the failures last.
+        auto failFrame = [&]() {
+            LandmarkFrame none;
+            none.tMs = meta.timestampNs / 1000000ull;
+            none.aspect = 1.f;
+            haveSession_ = true;
+            engine_.process(none, events_);
+            sendEvents(events_);
+            return false;
+        };
         if (!convertToRgb(frameBytes_.data(), frameBytes_.size(), meta.format, rgb_))
         {
             ++stats_.convertErrors;
             errorReason_ = "unsupported_frame";
-            return false;
+            return failFrame();
         }
         std::string err;
         if (!model_->detect(rgb_, hands_, err))
         {
             ++stats_.modelErrors;
             errorReason_ = "model_failed";
-            return false;
+            return failFrame();
         }
         LandmarkFrame lf;
         lf.tMs = meta.timestampNs / 1000000ull;

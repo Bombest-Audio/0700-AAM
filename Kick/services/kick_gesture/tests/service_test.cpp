@@ -259,6 +259,21 @@ TEST(Service, ModelFailureIsReportedAndRecovered)
     EXPECT_GE(r.lines("\"state\":\"running\"").size(), 1u);
 }
 
+TEST(Service, ModelFailureDuringAPinchStillEndsThePinch)
+{
+    Rig r;
+    r.camera(true);
+    r.model.hasPose = true;
+    r.model.pose = synthPinch(0.5f, 0.5f, 0.2f);
+    r.run(1500);
+    ASSERT_EQ(r.lines("pinch_start").size(), 1u);
+    ASSERT_EQ(r.lines("pinch_end").size(), 0u);
+
+    r.model.fail = true;
+    r.run(1500);
+    EXPECT_EQ(r.lines("pinch_end").size(), 1u) << "failed frames count as no hand, so the pinch ends after lost_ms";
+}
+
 TEST(Service, ShutdownClosesThePinchAndSaysStopped)
 {
     Rig r;
