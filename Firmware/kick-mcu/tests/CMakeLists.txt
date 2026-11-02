@@ -94,6 +94,12 @@ target_link_libraries(kick_mcu_contract_tests PRIVATE kick_mcu_bsp_sim GTest::gt
 set_source_files_properties(${KICK_REPO_ROOT}/ComProtocol/PktMgr/PktMgr.cpp PROPERTIES COMPILE_OPTIONS "-w")
 target_compile_options(kick_mcu_contract_tests PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-Wno-unused-parameter>)
 
+# The host updater harness builds JUCE's core module, so it is opt-in. See host_updater/CMakeLists.txt.
+option(KICK_MCU_HOST_UPDATER "Build the harness that runs the host's real MCU updater against the firmware" OFF)
+if(KICK_MCU_HOST_UPDATER AND TARGET kick_mcu_sim_lib)
+    add_subdirectory(host_updater)
+endif()
+
 include(GoogleTest)
 gtest_discover_tests(kick_mcu_tests DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests(kick_mcu_contract_tests DISCOVERY_MODE PRE_TEST)
