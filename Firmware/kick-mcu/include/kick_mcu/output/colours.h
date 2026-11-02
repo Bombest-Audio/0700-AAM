@@ -50,7 +50,12 @@ namespace output
     class GammaTable
     {
     public:
-        explicit GammaTable( float gamma = 2.2f ) { setGamma( gamma ); }
+        /// An exponent setGamma() refuses falls back to 2.2, so the table is never left all zero.
+        explicit GammaTable( float gamma = 2.2f )
+        {
+            if( !setGamma( gamma ) )
+                setGamma( 2.2f );
+        }
 
         /// Rebuilds the table. The exponent is limited to 1.0 through 4.0; anything else is refused
         /// and returns false.

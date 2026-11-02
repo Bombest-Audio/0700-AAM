@@ -90,3 +90,11 @@ TEST( GammaTable, ItIsAdjustableAndRefusesNonsense )
     EXPECT_FALSE( g.setGamma( std::nanf( "" ) ) );
     EXPECT_FLOAT_EQ( 2.8f, g.gamma() ) << "a refused value changes nothing";
 }
+
+TEST( GammaTable, ConstructorFallsBackToDefaultOnABadExponent )
+{
+    GammaTable g( 0.5f );
+    EXPECT_FLOAT_EQ( 2.2f, g.gamma() );
+    EXPECT_EQ( GammaTable( 2.2f ).apply( 128 ), g.apply( 128 ) );
+    EXPECT_EQ( 255, g.apply( 255 ) );
+}

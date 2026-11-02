@@ -64,17 +64,26 @@ TEST_F( Decode, LedSetSingleHoldsStateAndColour )
     EXPECT_EQ( OFF, table().buttons[13].state );
 }
 
+TEST_F( Decode, LedSetSingleAcceptsTheTwoByteBankMessage )
+{
+    // setBankMessage sends [EN_BANK_A + bank, 1] with no colour byte.
+    EXPECT_EQ( R::Applied, led( contract::LED_SET_SINGLE_LED, { 3, ON } ) );
+    EXPECT_EQ( ON, table().buttons[3].state );
+    EXPECT_EQ( 0, table().buttons[3].colour );
+    EXPECT_EQ( R::Applied, led( contract::LED_SET_SINGLE_LED, { 5, ON } ) );
+    EXPECT_EQ( OFF, table().buttons[3].state ) << "bank radio group still applies";
+}
+
 TEST_F( Decode, LedSetSingleRejectsBadPayloads )
 {
     EXPECT_EQ( R::Malformed, led( contract::LED_SET_SINGLE_LED, {} ) );
     EXPECT_EQ( R::Malformed, led( contract::LED_SET_SINGLE_LED, { 5 } ) );
-    EXPECT_EQ( R::Malformed, led( contract::LED_SET_SINGLE_LED, { 5, ON } ) );
     EXPECT_EQ( R::OutOfRange, led( contract::LED_SET_SINGLE_LED, { 53, ON, 0 } ) );
     EXPECT_EQ( R::OutOfRange, led( contract::LED_SET_SINGLE_LED, { 54, ON, 0 } ) ) << "Color Edit: the host sends 54, the table ends at 52";
     EXPECT_EQ( R::OutOfRange, led( contract::LED_SET_SINGLE_LED, { 255, ON, 0 } ) );
     EXPECT_TRUE( untouched() );
     EXPECT_EQ( 0u, decoder.stats().applied );
-    EXPECT_EQ( 3u, decoder.stats().malformed );
+    EXPECT_EQ( 2u, decoder.stats().malformed );
     EXPECT_EQ( 3u, decoder.stats().outOfRange );
 }
 

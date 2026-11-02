@@ -110,18 +110,19 @@ namespace output
 
     /// LED_SET_SINGLE_LED, payload [code, state, colour]. code is a BtnLedSequence value 0 to 52;
     /// 53 and up (the host sends 54 for Color Edit, which has no LED in the table) is OutOfRange.
-    /// state is a PadButtonState. colour is stored and not used by the button driver.
+    /// state is a PadButtonState. colour is stored and not used by the button driver, and is
+    /// optional: setBankMessage sends only [code, 1], so two bytes are valid and colour is 0.
     /// Setting a radio-group member to anything but OFF turns the rest of its group off.
     CommandResult CommandDecoder::setSingleLed( const uint8_t* p, size_t n )
     {
-        if( n < 3 )
+        if( n < 2 )
             return CommandResult::Malformed;
         if( p[0] >= kButtonLeds )
             return CommandResult::OutOfRange;
         LedFrame& frame = state_.beginUpdate();
         if( p[1] != STATE_OFF )
             lightRadio( frame, p[0] );
-        frame.buttons[p[0]] = { p[1], p[2] };
+        frame.buttons[p[0]] = { p[1], (uint8_t)( n >= 3 ? p[2] : 0 ) };
         state_.commit();
         return CommandResult::Applied;
     }
