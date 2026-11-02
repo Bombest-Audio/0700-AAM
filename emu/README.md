@@ -29,6 +29,7 @@ emu/run.sh              # opens both windows
 emu/run.sh --root DIR   # device root, default ~/KickEmu
 emu/run.sh --script emu/tests/smoke.script   # headless run, exit code = result
 python3 emu/tests/touch.py                    # touchscreen regression test (dialogs, file browser, double tap)
+python3 emu/tests/protocol_drift.py             # fails when the Surface's protocol.h drifts from Kick's contracts
 ```
 
 Needs Xcode, cmake, ninja, python3. On Windows, `emu\build.ps1` uses the CMake and Ninja that ship with Visual Studio 2022 (C++ workload) and `emu\run.ps1` takes `-Script`, `-Root` and `-Port`; clone with `core.autocrlf=false` so the JUCE patch applies. Demo samples need Python 3 on Windows (`winget install Python.Python.3.12`), otherwise they are skipped. The first build fetches JUCE 7.0.12 and other deps through CPM and applies `emu/patches/juce_7.0.12_macos15_sdk.patch`.

@@ -36,92 +36,13 @@
 #include <iostream>
 #include <mutex>
 
+#include "panel_paint.h"
+#include "protocol.h"
+
 namespace
 {
-    //==============================================================================
-    // Protocol constants, mirrored from Kick/modules/contracts/dcl/dcl_contracts.h and
-    // ComProtocol/PktMgr/PktMgr.hpp. Kept local so the Surface builds without the Kick tree.
-
-    enum PacketType
-    {
-        PktSystem = 0,
-        PktButton,
-        PktLed,
-        PktPad,
-        PktKnobs,
-        PktMidi,
-        PktCv,
-        PktSlider
-    };
-
-    enum SysCmd
-    {
-        SysResetGd = 0,
-        SysGetSwVer,
-        SysCommInit,
-        SysSwUpdate,
-        SysCheckCommStatus,
-        SysBpm,
-        SysReconnect,
-        SysShutdown
-    };
-
-    enum LedCmd
-    {
-        LedSingle = 0,
-        LedBlink,
-        LedAll
-    };
-
-    enum PadCmd
-    {
-        PadState = 0,
-        PadSetSingle,
-        PadSetAllSingleColour,
-        PadSetAllMultiColour,
-        PadSettings,
-        PadColourMode,
-        PadSetColourState,
-        PadSetAfterTouch,
-        PadSetBlinking,
-        PadSetStepSingle,
-        PadSetStepAll
-    };
-
-    enum SliderCmd
-    {
-        SliderTouch = 0,
-        SliderBar,
-        SliderLevel,
-        SliderIndividual
-    };
-
-    enum PadButtonState
-    {
-        StateOff = 0,
-        StateOn,
-        StateSampleAssigned,
-        StateSampleNotAssigned,
-        StateOnBlink,
-        StateOffBlink
-    };
-
-    constexpr int numPads    = 16;
-    constexpr int numButtons = 53;
-    constexpr int numKnobs   = 16;
-    constexpr int numCv      = 8;
-
-    constexpr int btnShift      = 31;
-    constexpr int btnPlay       = 45;
-    constexpr int btnStop       = 44;
-    constexpr int btnEnter      = 26;
-    constexpr int btnKnobCcw    = 28;
-    constexpr int btnKnobCw     = 30;
-    constexpr int btnBack       = 29;
-    constexpr int colourTrans   = 15;
-    constexpr int knobCenter    = 0;
-    constexpr int knobCmdRotary = 0;
-    constexpr int knobCmdQlink  = 1;
+    using namespace surface_protocol;
+    using surface_paint::drawPot;
 
     const char* const buttonNames[numButtons] = {
         "Bank A", "Bank B", "Bank C", "Bank D", "Bank E", "Bank F", "Bank G", "Bank H",
@@ -236,6 +157,8 @@ namespace
         }
 
         bool isUp() const { return dataFd.load() >= 0 || tcpUp.load(); }
+
+        void send( const Packet& p ) { send( p.type, p.cmd, p.data ); }
 
         void send( int type, int cmd, const std::vector<int>& data )
         {
@@ -732,7 +655,7 @@ namespace
             if( !juce::isPositiveAndBelow( pad, numPads ) )
                 return;
             pressedPads[(size_t)pad] = true;
-            link.send( PktPad, PadState, { pad, 1, vel, (int)pressure.getValue() - 1 } );
+            link.send( packets::pad( pad, true, vel, (int)pressure.getValue() - 1 ) );
             logLine( "TX pad " + juce::String( pad ) + " down vel " + juce::String( vel ) );
         }
 
@@ -741,7 +664,7 @@ namespace
             if( !juce::isPositiveAndBelow( pad, numPads ) )
                 return;
             pressedPads[(size_t)pad] = false;
-            link.send( PktPad, PadState, { pad, 0, 0, 0 } );
+            link.send( packets::pad( pad, false, 0, 0 ) );
             logLine( "TX pad " + juce::String( pad ) + " up" );
         }
 
@@ -750,7 +673,7 @@ namespace
             if( !juce::isPositiveAndBelow( id, numButtons ) )
                 return;
             pressedButtons[(size_t)id] = true;
-            link.send( PktButton, 0, { id, 1 } );
+            link.send( packets::button( id, true ) );
             logLine( "TX button " + juce::String( buttonNames[id] ) + " down" );
         }
 
@@ -759,7 +682,7 @@ namespace
             if( !juce::isPositiveAndBelow( id, numButtons ) )
                 return;
             pressedButtons[(size_t)id] = false;
-            link.send( PktButton, 0, { id, 0 } );
+            link.send( packets::button( id, false ) );
             logLine( "TX button " + juce::String( buttonNames[id] ) + " up" );
         }
 
@@ -768,24 +691,20 @@ namespace
         {
             if( steps == 0 || !juce::isPositiveAndBelow( knob, numKnobs + 1 ) )
                 return;
-            // One packet carries the whole burst. Some screens act once per packet (the step sequencer flips a step's
-            // selection on every one), so splitting a burst into single steps would change what the app does. The
-            // count is a signed byte in the unit's simulator, so cap it there.
-            link.send( PktKnobs, knob == knobCenter ? knobCmdRotary : knobCmdQlink, { knob, steps > 0 ? 1 : 0, juce::jmin( 127, std::abs( steps ) ) } );
+            link.send( packets::knob( knob, steps ) );
             logLine( "TX knob " + juce::String( knob ) + " " + juce::String( steps ) );
         }
 
         void setStrip( int percent )
         {
             stripValue = juce::jlimit( 0, 100, percent );
-            link.send( PktSlider, SliderTouch, { stripValue } );
+            link.send( packets::strip( stripValue ) );
             logLine( "TX strip " + juce::String( stripValue ) );
         }
 
         void releaseStrip()
         {
-            // The strip reports 0 when the finger lifts, which is how the app ends a touch.
-            link.send( PktSlider, SliderTouch, { 0 } );
+            link.send( packets::strip( 0 ) );
         }
 
         void setMedia()
@@ -850,66 +769,6 @@ namespace
         int   panelSide() const { return getHeight(); }
 
         //==============================================================================
-        /// A knurled knob like the unit's: a scalloped skirt, a faceted cone cap lit from the top left and a
-        /// thin pointer. The skirt and facets turn with the knob; the lighting stays put.
-        static void drawPot( juce::Graphics& g, float cx, float cy, float r, float angle, int knurls = 12, bool pointer = true )
-        {
-            using juce::Colour;
-            constexpr float twoPi = juce::MathConstants<float>::twoPi;
-            const float     light = -0.8f; // direction the light comes from, clockwise from 12 o'clock (top left)
-
-            // Drop shadow
-            g.setGradientFill( juce::ColourGradient( juce::Colours::black.withAlpha( 0.7f ), cx, cy + r * 0.15f, juce::Colours::transparentBlack,
-                                                     cx, cy + r * 1.35f, true ) );
-            g.fillEllipse( cx - r * 1.35f, cy - r * 1.2f, r * 2.7f, r * 2.7f );
-
-            // Knurled skirt
-            juce::Path skirt;
-            for( int i = 0; i <= 96; ++i )
-            {
-                const float a  = (float)i / 96.0f * twoPi;
-                const float rr = r * ( 0.94f + 0.06f * std::cos( a * (float)knurls - angle * (float)knurls ) );
-                const juce::Point<float> p( cx + std::sin( a ) * rr, cy - std::cos( a ) * rr );
-                i == 0 ? skirt.startNewSubPath( p ) : skirt.lineTo( p );
-            }
-            skirt.closeSubPath();
-            g.setGradientFill( juce::ColourGradient( Colour( 0xff383b42 ), cx - r * 0.6f, cy - r * 0.7f, Colour( 0xff060709 ), cx + r * 0.5f, cy + r * 0.8f, false ) );
-            g.fillPath( skirt );
-            g.setColour( Colour( 0xff0a0b0d ) );
-            g.strokePath( skirt, juce::PathStrokeType( 1.0f ) );
-
-            // Faceted cone cap: each facet's shade comes from where it faces relative to the light
-            const float capR   = r * 0.76f;
-            const int   facets = 16;
-            for( int i = 0; i < facets; ++i )
-            {
-                const float a0    = angle + (float)i / (float)facets * twoPi;
-                const float a1    = a0 + twoPi / (float)facets;
-                const float facing = 0.5f + 0.5f * std::cos( ( a0 + a1 ) * 0.5f - light );
-                const float shade  = ( 0.15f + 0.85f * facing * facing ) * ( i % 2 == 0 ? 1.0f : 0.55f );
-                juce::Path wedge;
-                wedge.startNewSubPath( cx, cy );
-                wedge.addCentredArc( cx, cy, capR, capR, 0.0f, a0, a1 );
-                wedge.closeSubPath();
-                g.setColour( Colour( 0xff111216 ).interpolatedWith( Colour( 0xff6a6e78 ), shade ) );
-                g.fillPath( wedge );
-            }
-            g.setGradientFill( juce::ColourGradient( Colour( 0x60ffffff ), cx - capR * 0.7f, cy - capR * 0.7f, Colour( 0x00ffffff ), cx, cy, false ) );
-            g.drawEllipse( cx - capR, cy - capR, capR * 2, capR * 2, 1.0f );
-            g.setColour( Colour( 0xff08090b ) );
-            g.drawEllipse( cx - capR - 0.6f, cy - capR - 0.6f, capR * 2 + 1.2f, capR * 2 + 1.2f, 0.8f );
-            g.setGradientFill( juce::ColourGradient( Colour( 0xff2a2c32 ), cx - r * 0.1f, cy - r * 0.1f, Colour( 0xff0c0d10 ), cx + r * 0.15f, cy + r * 0.15f, true ) );
-            g.fillEllipse( cx - r * 0.16f, cy - r * 0.16f, r * 0.32f, r * 0.32f );
-
-            if( pointer )
-            {
-                const float s = std::sin( angle ), c = std::cos( angle );
-                g.setColour( Colour( 0xffd8dbe2 ) );
-                g.drawLine( cx + s * r * 0.24f, cy - c * r * 0.24f, cx + s * r * 0.9f, cy - c * r * 0.9f, juce::jmax( 1.4f, r * 0.06f ) );
-                g.fillEllipse( cx + s * r * 0.9f - 1.6f, cy - c * r * 0.9f - 1.6f, 3.2f, 3.2f );
-            }
-        }
-
         bool ledLit( int id, bool phase ) const
         {
             if( !juce::isPositiveAndBelow( id, numButtons ) )
@@ -1509,7 +1368,7 @@ namespace
                 if( live && ++heartbeatTicks >= 90 )
                 {
                     heartbeatTicks = 0;
-                    link.send( PktSystem, SysCheckCommStatus, { 2 } );
+                    link.send( packets::commStatus( 2 ) );
                 }
             }
             repaint();
@@ -1544,11 +1403,11 @@ namespace
                         if( d( 0 ) == 1 )
                         {
                             model.appLive = false;
-                            link.send( PktSystem, SysGetSwVer, { 1, 0 } );
-                            link.send( PktSystem, SysCheckCommStatus, { 1 } );
+                            link.send( packets::softwareVersion() );
+                            link.send( packets::commStatus( 1 ) );
                         }
                         else
-                            link.send( PktSystem, SysCheckCommStatus, { 2 } );
+                            link.send( packets::commStatus( 2 ) );
                     }
                     else if( f.cmd == SysCheckCommStatus && d( 0 ) == 2 )
                         model.appLive = true;
