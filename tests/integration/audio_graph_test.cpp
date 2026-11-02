@@ -346,7 +346,7 @@ TEST_F( AudioGraphTest, MeterOnSilenceStaysAtFloor )
 
 // ------------------------------------------------------ design-level control
 
-TEST_F( AudioGraphTest, DesignBypassPassesInputThroughInsteadOfGraph )
+TEST_F( AudioGraphTest, DesignBypassSilencesTheGraphWhenNoInputsAreConnected )
 {
     sineToOutput( 1000.f );
     design->setBypass( true );

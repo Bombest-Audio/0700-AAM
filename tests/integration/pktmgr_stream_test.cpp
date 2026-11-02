@@ -123,8 +123,17 @@ TEST( PktMgrStream, EverySingleBitErrorInAFrameIsDetected )
     const auto       good = enc.encode( CPktMgr::EN_PKT_TYPE_PAD, CPktMgr::EN_PKT_REQUEST, 17, { 10, 20, 30, 40 } );
     const std::vector<uint8_t> goodPayload{ 10, 20, 30, 40 };
 
+    // The unflipped frame must be accepted, or the loop below proves nothing.
+    {
+        PktHarness rx;
+        rx.feed( good );
+        ASSERT_TRUE( rx.mgr.IsFrameRcvComplete() );
+        ASSERT_EQ( rx.drainPayload(), goodPayload );
+    }
+
     // Flip bits in every byte after the 'MT' sync and before the CRC: the receiver
-    // must never hand back a frame whose payload differs from what was sent.
+    // must never hand back a frame whose payload differs from what was sent. Each
+    // iteration uses a fresh receiver, so no state leaks between them.
     for( size_t byte = 2; byte < good.size(); ++byte )
         for( int bit = 0; bit < 8; ++bit )
         {
@@ -135,10 +144,6 @@ TEST( PktMgrStream, EverySingleBitErrorInAFrameIsDetected )
             rx.feed( bad );
             if( rx.mgr.IsFrameRcvComplete() )
                 ASSERT_EQ( rx.drainPayload(), goodPayload ) << "byte " << byte << " bit " << bit << " delivered corrupt data";
-            // Recover for the next iteration; the static CRC accumulator is shared across instances.
-            rx.mgr.ClearReceiver();
-            PktHarness flush;
-            flush.feed( flush.encode( CPktMgr::EN_PKT_TYPE_SYSTEM, CPktMgr::EN_PKT_REQUEST, 0, { 1 } ) );
         }
 }
 

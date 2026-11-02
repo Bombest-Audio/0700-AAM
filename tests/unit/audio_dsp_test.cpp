@@ -343,13 +343,6 @@ TEST( ADSR, DisabledEnvelopeIgnoresKeyOn )
     EXPECT_EQ( env.getCurrentState(), ADSR<double>::State::IDLE );
 }
 
-TEST( ADSR, BufferProcessingScalesAudioByEnvelope )
-{
-    // Wire a Buffer through ADSR::process(Buffer&): silence in, silence out; unity in, shaped out.
-    // Covered at integration level (see integration/audio_graph_test.cpp) because it needs the buffer pool.
-    SUCCEED();
-}
-
 TEST( ADSR, ExponentialAndLinearBothStayBounded )
 {
     for( auto type : { ADSR<double>::Type::LINEAR, ADSR<double>::Type::EXPONENTIAL } )

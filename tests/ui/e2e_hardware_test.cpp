@@ -222,18 +222,13 @@ TEST_F( HardwareToUi, PanelSessionUpdatesModelAndPixels )
     send( screen.mode, panelButton( mcu, DeviceControlContracts::EN_KNOB_CW ) );
     send( screen.mode, panelButton( mcu, DeviceControlContracts::EN_KNOB_CW ) );
     send( screen.volume, mcu.encode( CPktMgr::EN_PKT_TYPE_SLIDER, CPktMgr::EN_PKT_REQUEST, DeviceControlContracts::EN_SLIDER_TOUCH_INPUT, { 65 } ) );
-    kicktest::pump();
+    kicktest::pumpUntil( [&] { return screen.model.modeIndex == 2; } );
 
     EXPECT_EQ( screen.model.modeIndex, 2 );
     EXPECT_EQ( screen.model.modeName, "Seq" );
     // Hardware-driven slider moves set the value silently, so read the control, not the callback.
     EXPECT_NEAR( screen.volume.getNormalized(), 0.65, 1e-6 );
 
-    auto after = kicktest::snapshot( screen );
-    int  changed = 0;
-    for( int y = 0; y < after.getHeight(); ++y )
-        for( int x = 0; x < after.getWidth(); ++x )
-            if( after.getPixelAt( x, y ) != before.getPixelAt( x, y ) )
-                ++changed;
+    const int changed = kicktest::differingPixels( kicktest::snapshot( screen ), before );
     EXPECT_GT( changed, 100 ) << "the screen should look different after the session";
 }

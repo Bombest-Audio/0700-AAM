@@ -188,8 +188,8 @@ TEST( PktMgrHwMsg, ResetZeroesMessage )
 }
 
 // ---------------------------------------------------------------------------
-// Known issues. These pin the CURRENT behavior so a fix is a deliberate,
-// visible change: when you fix one, flip the expectation and rename the test.
+// Recovery: the receiver must resynchronize after noise, bad frames and
+// oversize frames, and must never overwrite a frame the consumer has not read.
 // ---------------------------------------------------------------------------
 
 TEST( PktMgrRecovery, EmptyPayloadFrameCompletes )
@@ -244,7 +244,49 @@ TEST( PktMgrRecovery, OversizedLengthIsRejectedWithoutOverrunningTheFifo )
     EXPECT_TRUE( h.mgr.IsFrameRcvComplete() );
 }
 
-TEST( PktMgrRecovery, TxFifoStartsEmptyAndKeepsOrder )
+TEST( PktMgrRecovery, PayloadFillingTheRxFifoIsAccepted )
+{
+    PktHarness h;
+    h.feed( h.encode( kButton, kReq, 8, std::vector<int>( 30, 7 ) ) ); // harness RX FIFO is 30 bytes
+    EXPECT_TRUE( h.mgr.IsFrameRcvComplete() );
+    EXPECT_EQ( h.drainPayload().size(), 30u );
+}
+
+TEST( PktMgrRecovery, PayloadOneByteOverTheRxFifoIsRejectedAndResyncs )
+{
+    PktHarness h;
+    h.feed( h.encode( kButton, kReq, 8, std::vector<int>( 31, 7 ) ) );
+    EXPECT_FALSE( h.mgr.IsFrameRcvComplete() );
+    h.mgr.ClearReceiver();
+    h.feed( h.encode( kButton, kReq, 9, { 1 } ) );
+    EXPECT_TRUE( h.mgr.IsFrameRcvComplete() );
+    EXPECT_EQ( h.mgr.GetRxCommand(), 9 );
+}
+
+TEST( PktMgrRecovery, UnconsumedFrameIsNotOverwrittenByTheNextOne )
+{
+    PktHarness h;
+    h.feed( h.encode( kButton, kReq, 1, { 11 } ) );
+    ASSERT_TRUE( h.mgr.IsFrameRcvComplete() );
+
+    h.feed( h.encode( kButton, kReq, 2, { 22 } ) ); // arrives before the consumer reads frame 1
+
+    EXPECT_EQ( h.mgr.GetRxCommand(), 1 );
+    EXPECT_EQ( h.drainPayload(), std::vector<uint8_t>{ 11 } );
+}
+
+TEST( PktMgrRecovery, NextFrameIsReceivedOnceTheConsumerClearsTheReceiver )
+{
+    PktHarness h;
+    h.feed( h.encode( kButton, kReq, 1, { 11 } ) );
+    h.mgr.ClearReceiver();
+    h.feed( h.encode( kButton, kReq, 2, { 22 } ) );
+    ASSERT_TRUE( h.mgr.IsFrameRcvComplete() );
+    EXPECT_EQ( h.mgr.GetRxCommand(), 2 );
+    EXPECT_EQ( h.drainPayload(), std::vector<uint8_t>{ 22 } );
+}
+
+TEST( PktMgrTx, FifoKeepsOrder )
 {
     PktHarness h;
     h.mgr.PushUint8ToTxFifo( 0xAA );
