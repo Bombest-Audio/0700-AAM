@@ -80,6 +80,10 @@ private:
     uint8_t                m_ui8TxCommand;
     volatile enumPacketDir m_enPktDir;
 
+    // Bytes of the frame being received, from 'M' up to the last payload byte. The CRC covers exactly these.
+    // One per instance: instances must not share a partial frame.
+    std::vector<char> m_rxFrame;
+
     uint8_t        ui8RxDataFifo[30];
     const uint8_t  mc_ui8RxFifoSize;
     const uint8_t  mc_ui8TxFifoSize;

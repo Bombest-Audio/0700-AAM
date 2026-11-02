@@ -30,28 +30,40 @@ void CPktMgr::ClearReceiver( void )
     m_enPktDir           = EN_PKT_REQUEST;
     m_boFrameRcvComplete = FALSE;
     m_enFrmState         = EN_FRM_STATE_INIT_1;
+    m_rxFrame.clear();
 }
 
 void CPktMgr::PushByteToRxFifo( uint8_t f_ui8Data )
 {
-    static std::vector<char> ui8TempReceiveData;
-    bool                     boRcvdCompleteMsg = FALSE;
+    bool boRcvdCompleteMsg = FALSE;
 
     switch( m_enFrmState )
     {
         case EN_FRM_STATE_INIT_1:
-            ui8TempReceiveData.push_back( f_ui8Data );
+            // Hunt for the 'M' that starts a frame. Anything else is line noise and must not reach the CRC.
+            m_rxFrame.clear();
             if( f_ui8Data == 'M' )
             {
+                m_rxFrame.push_back( f_ui8Data );
                 m_enFrmState = EN_FRM_STATE_INIT_2;
             }
 
             break;
         case EN_FRM_STATE_INIT_2:
-            ui8TempReceiveData.push_back( f_ui8Data );
             if( f_ui8Data == 'T' )
             {
+                m_rxFrame.push_back( f_ui8Data );
                 m_enFrmState = EN_FRM_STATE_TYPE;
+            }
+            else if( f_ui8Data == 'M' )
+            {
+                // 'M' 'M' 'T': the first 'M' was noise, this one starts the frame.
+                m_rxFrame.assign( 1, (char)f_ui8Data );
+            }
+            else
+            {
+                m_rxFrame.clear();
+                m_enFrmState = EN_FRM_STATE_INIT_1;
             }
 
             break;
@@ -59,31 +71,38 @@ void CPktMgr::PushByteToRxFifo( uint8_t f_ui8Data )
 
             m_enPktType  = (enumPacketType)f_ui8Data;
             m_enFrmState = EN_FRM_STATE_DIR;
-            ui8TempReceiveData.push_back( f_ui8Data );
+            m_rxFrame.push_back( f_ui8Data );
             break;
         case EN_FRM_STATE_DIR:
-            ui8TempReceiveData.push_back( f_ui8Data );
+            m_rxFrame.push_back( f_ui8Data );
             m_enPktDir   = (enumPacketDir)f_ui8Data;
             m_enFrmState = EN_FRM_STATE_ID;
             break;
         case EN_FRM_STATE_ID:
-            ui8TempReceiveData.push_back( f_ui8Data );
+            m_rxFrame.push_back( f_ui8Data );
             m_ui8RxCommand = f_ui8Data;
             m_enFrmState   = EN_FRM_STATE_SIZE;
             break;
         case EN_FRM_STATE_SIZE:
-            ui8TempReceiveData.push_back( f_ui8Data );
+            m_rxFrame.push_back( f_ui8Data );
             m_ui8FrameSize = ( f_ui8Data );
             m_enFrmState   = EN_FRM_STATE_DATA;
 
-            if( m_ui8FrameSize == 0x00 )
+            // The size byte counts the payload plus the CRC, so the payload is size - 1 bytes. With no
+            // payload (size 0 or 1) there is nothing to collect and the CRC follows directly.
+            if( m_ui8FrameSize <= 1 )
             {
                 m_enFrmState = EN_FRM_STATE_CRC;
+            }
+            else if( (int)m_ui8FrameSize - 1 > (int)mc_ui8RxFifoSize )
+            {
+                // Would overrun the RX fifo. Drop the frame and hunt for the next one.
+                ClearReceiver();
             }
             break;
 
         case EN_FRM_STATE_DATA:
-            ui8TempReceiveData.push_back( f_ui8Data );
+            m_rxFrame.push_back( f_ui8Data );
             if( m_ui8RxFifoWritePos < ( m_ui8FrameSize - 1 ) )
             {
                 m_ptrui8RxFifo[m_ui8RxFifoWritePos] = f_ui8Data;
@@ -96,13 +115,23 @@ void CPktMgr::PushByteToRxFifo( uint8_t f_ui8Data )
             }
             break;
         case EN_FRM_STATE_CRC:
-            uint8_t ui8CrcTemp = 0;
-            ui8CrcTemp         = CrcGen( ui8TempReceiveData );
+        {
+            uint8_t ui8CrcTemp = CrcGen( m_rxFrame );
             if( ui8CrcTemp == f_ui8Data )
             {
                 boRcvdCompleteMsg = TRUE;
+                m_enFrmState      = EN_FRM_STATE_INIT_1;
             }
-            ui8TempReceiveData.clear();
+            else
+            {
+                // Bad CRC: forget the partial payload and resynchronise on the next 'M' 'T'.
+                ClearReceiver();
+            }
+            m_rxFrame.clear(); // also on success: the next frame starts empty
+            break;
+        }
+        default:
+            ClearReceiver();
             break;
     }
 
@@ -130,10 +159,10 @@ void CPktMgr::PushUint8ToTxFifo( uint8_t f_ui8Data )
 uint8_t CPktMgr::CrcGen( std::vector<char>& f_txData )
 {
     uint8_t ui8CrcValue = 0xff;
-    uint8_t i, j;
-    uint8_t len = f_txData.size();
+    uint8_t j;
+    size_t  len = f_txData.size();
 
-    for( i = 0; i < len; i++ )
+    for( size_t i = 0; i < len; i++ )
     {
         ui8CrcValue ^= f_txData[i];
         for( j = 0; j < 8; j++ )
