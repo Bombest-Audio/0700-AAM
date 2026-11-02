@@ -187,9 +187,13 @@ namespace Controls
 
             while( rxLength )
             {
-                int pktIndex     = 0;
-                int pktOffset    = 0;
-                int packetLength = byteArray[5 + pktIndex] + 7;
+                int pktIndex  = 0;
+                int pktOffset = 0;
+                // The size byte sits at offset 5, so fewer bytes than that cannot hold a frame.
+                if( rxLength < 6 )
+                    break;
+                // Unsigned: a size byte above 127 must not turn into a negative length.
+                int packetLength = (uint8_t)byteArray[5 + pktIndex] + 7;
                 // DBG("Packet Length: " << packetLength);
 
                 if( ( rxLength >= packetLength ) && ( byteArray[0] == 'M' ) && ( byteArray[1] == 'T' ) )

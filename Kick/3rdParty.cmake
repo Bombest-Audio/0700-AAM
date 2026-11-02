@@ -79,6 +79,24 @@ if(JUCE_ADDED)
         endif()
     endif()
 
+    # Emulator, any host: the unit has one window that is always shown and focused, but the emulated
+    # window is minimised behind the KICK Surface. Without this, Kick's dialogs open as separate
+    # invisible windows and nothing ever takes keyboard focus, so the encoder and knobs do nothing.
+    if(KICK_EMU)
+        set(EMU_KIOSK_FLAG_FILE "${JUCE_SOURCE_DIR}/juce_emu_kiosk.flag")
+        if(NOT EXISTS ${EMU_KIOSK_FLAG_FILE})
+            execute_process(
+                COMMAND git apply ${KICK_EMU_DIR}/patches/juce_7.0.12_emu_kiosk.patch
+                WORKING_DIRECTORY ${JUCE_SOURCE_DIR}
+                RESULT_VARIABLE emu_kiosk_result
+            )
+            if(emu_kiosk_result)
+                message(FATAL_ERROR "Failed to apply emu kiosk patch to JUCE: ${emu_kiosk_result}")
+            endif()
+            file(WRITE ${EMU_KIOSK_FLAG_FILE} "emu kiosk patch applied")
+        endif()
+    endif()
+
     add_subdirectory(${JUCE_SOURCE_DIR} ./cmake_build_juce)
 endif()
 
