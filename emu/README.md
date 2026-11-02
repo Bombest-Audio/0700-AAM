@@ -62,7 +62,9 @@ Dual-legend keys (BANK A / E, MAIN / GRID and so on) send the printed primary id
 
 Keyboard: pads `z x c v / a s d f / q w e r / 1 2 3 4` (bottom row first), space = Play, return = Enter, arrows = Knob CCW/CW, esc = Back, tab = Stop, shift = Shift, up/down = encoder.
 
-Script commands (`--script`, `#` comments): `wait ms`, `pad 1-16 [vel] [holdMs]`, `button name|id [holdMs]`, `knob 0|1-16 steps` (negative = CCW), `slider 0-100` (the strip is vertical), `sd in|out`, `usb in|out`, `snapshot file.png`, `expect connected`, `expect pad n colourId|off`, `expect led name on|off`, `expect cv ch minVolts`, `quit [code]`.
+Hold G and press 1 to 7 to send a gesture (1 swipe left, 2 swipe right, 3 open palm, 4 fist, 5 pinch start, 6 pinch change, 7 pinch end). Left and right arrows then move the pinch aperture. See "Gestures".
+
+Script commands (`--script`, `#` comments): `wait ms`, `gesture name [value]`, `pad 1-16 [vel] [holdMs]`, `button name|id [holdMs]`, `knob 0|1-16 steps` (negative = CCW), `slider 0-100` (the strip is vertical), `sd in|out`, `usb in|out`, `snapshot file.png`, `expect connected`, `expect pad n colourId|off`, `expect led name on|off`, `expect cv ch minVolts`, `quit [code]`.
 
 `--replay TRACE` feeds the RX lines of a trace (below) into the Surface with no serial line and exits; `--dump-leds FILE` writes the final LED table as one line of JSON (`-` is stdout), at exit on a live run too. `emu/tools/compare-leds.sh` replays a trace through the Surface and `kick-mcu-sim` and diffs the two tables. `emu/tests/traces/leds.trace` is the LED trace: host frames recorded from the unmodified host plus synthetic LED frames made by `emu/tools/make-led-trace.py`, because the emulated host does not send button LED, blink or step frames by itself.
 
@@ -108,6 +110,17 @@ Kick also streams its window to the Surface on TCP `50903` (`KICK_EMU_FRAME_PORT
 
 The Surface listens on UDP `50902` (`KICK_EMU_EVENT_PORT`) for `cv ch raw volts`, `backlight N`, `power reboot|off`, `app started|stopped`.
 
+## Gestures
+
+The app listens for kick-gesture on `127.0.0.1:50501` (`KICK_GESTURE_PORT`). The Surface can send the same events, so gesture control runs in the emulator with no camera and no model. How the app maps them is in `docs/gestures.md`.
+
+- Gestures are off in the app until the Camera page in Preferences turns them on. `KICK_EMU_GESTURES=1` turns them on for a run instead.
+- `emu/run.sh --gesture` also builds `kick-gesture` without the ONNX backend and replays a synthetic hand stream (`kick-gesture-synth demo`) into the app in real time, over and over. That is the real service and the real IPC path.
+- `emu/tests/run-gesture-test.sh` runs `gesture.script` with gestures on, checks the bank LEDs and the app log, then runs `gesture-off.script` to prove a swipe does nothing while gestures are off. About two minutes.
+- `emu/tests/run-gesture-ipc-test.sh` is a JUCE console test, without the UI, of the service's sink against the app's real IPC server. It is not part of `emu/build.sh`.
+
+Bank LEDs are the only gesture result the Surface shows. In this build selecting a bank lights its LED but does not turn the previous one off, so a script can only check that a bank turned on.
+
 ## Serial protocol
 
 230400 8N1, frames `'M' 'T' type dir cmd size data[size-1] crc8`. CRC-8 poly 0x31, init 0xFF over every prior byte. `size` is data length + 1. Frames to the app carry one trailing `'\n'` because the app's reader takes `size+7` bytes. Frames from the app have no trailer. A frame with no data hangs the app parser, so the Surface never sends one.
@@ -118,7 +131,7 @@ Types: SYSTEM 0, BUTTON 1, LED 2, PAD 3, KNOBS 4, MIDI 5, CV 6, SLIDER 7. Handsh
 
 - The stand-in modules are written from how Kick calls them, not from the closed originals. `AudIO_constants` values are guesses sized to work.
 - Audio uses the default CoreAudio output at 48 kHz, 256 frames.
-- The camera is a placeholder on the panel. Kick has no camera code.
+- The camera is a placeholder on the panel. The app follows kick-camera on its control socket, and gestures arrive from the Surface keys or a replayed stream (see "Gestures"), not from a camera.
 - Linux and Windows audio use the host's default device. The Docker run has none, so it only proves boot and the UI.
 - Pad aftertouch is sent but the app ignores it.
 - Pad LEDs only light when the app sets them (some modes need a loaded program).

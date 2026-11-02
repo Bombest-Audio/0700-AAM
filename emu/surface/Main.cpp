@@ -685,6 +685,72 @@ namespace
     };
 
     //==============================================================================
+    //==============================================================================
+    /// Sends the events kick-gesture would send to the app's gesture server (127.0.0.1:50501, or KICK_GESTURE_PORT),
+    /// so gestures can be tried with the keyboard or a script and no camera. It speaks the same JUCE
+    /// InterprocessConnection framing: a REGISTER message first, then message_type 500 with the event nested under "event".
+    class GestureInjector : private juce::InterprocessConnection
+    {
+    public:
+        GestureInjector() : juce::InterprocessConnection( true ) {}
+        ~GestureInjector() override { disconnect(); }
+
+        static int port()
+        {
+            const int p = juce::SystemStats::getEnvironmentVariable( "KICK_GESTURE_PORT", "" ).getIntValue();
+            return p > 0 && p < 65536 ? p : 50501;
+        }
+
+        /// Names are the event contract's: swipe_left, swipe_right, palm_hold, fist, pinch_start, pinch_change, pinch_end.
+        /// `value` is the pinch aperture, 0 to 1, and is sent for the pinch events only.
+        bool send( const juce::String& type, float value, float confidence = 0.97f )
+        {
+            if( !ensureConnected() )
+                return false;
+            auto* ev = new juce::DynamicObject();
+            ev->setProperty( "type", type );
+            if( type.startsWith( "pinch_" ) )
+                ev->setProperty( "value", (double)value );
+            ev->setProperty( "hand", "right" );
+            ev->setProperty( "confidence", (double)confidence );
+            ev->setProperty( "t_ms", (juce::int64)juce::Time::getMillisecondCounter() );
+            auto* msg = new juce::DynamicObject();
+            msg->setProperty( "message_id", ++messageId );
+            msg->setProperty( "originator", 500 );
+            msg->setProperty( "message_type", 500 );
+            msg->setProperty( "transaction_type", 30 );
+            msg->setProperty( "event", juce::var( ev ) );
+            return sendJson( juce::var( msg ) );
+        }
+
+    private:
+        bool ensureConnected()
+        {
+            if( isConnected() )
+                return true;
+            if( !connectToSocket( "127.0.0.1", port(), 500 ) )
+                return false;
+            auto* reg = new juce::DynamicObject();
+            reg->setProperty( "message_type", 1 );
+            reg->setProperty( "connection_id", 500 );
+            reg->setProperty( "uuid", "" );
+            reg->setProperty( "connection_name", "kick-surface-gesture" );
+            return sendJson( juce::var( reg ) );
+        }
+
+        bool sendJson( const juce::var& v )
+        {
+            const auto json = juce::JSON::toString( v, true );
+            return sendMessage( juce::MemoryBlock( json.toRawUTF8(), json.getNumBytesAsUTF8() ) );
+        }
+
+        void connectionMade() override {}
+        void connectionLost() override {}
+        void messageReceived( const juce::MemoryBlock& ) override {} // the registration reply, nothing to do
+
+        int messageId{ 0 };
+    };
+
     class Surface : public juce::Component
         , private juce::Timer
     {
@@ -1171,7 +1237,7 @@ namespace
 
             g.setColour( juce::Colours::lightgrey );
             g.setFont( 11.0f );
-            g.drawText( "P1-P4 send knobs", x0, 84, w, 14, juce::Justification::centredLeft );
+            g.drawText( "P1-P4 send knobs. Hold G + 1-7: gestures", x0, 84, w, 14, juce::Justification::centredLeft );
             g.setColour( juce::Colours::grey );
             g.drawText( "velocity", velocity.getX(), velocity.getY() - 14, 80, 14, juce::Justification::left );
             g.drawText( "pad pressure byte", pressure.getX(), pressure.getY() - 14, 140, 14, juce::Justification::left );
@@ -1197,7 +1263,7 @@ namespace
 
             g.setColour( juce::Colours::grey );
             g.setFont( 10.5f );
-            g.drawFittedText( "Camera: Kick has no camera code yet, so the module on the panel is a stand-in.", x0, 422, w, 28, juce::Justification::centredLeft, 2 );
+            g.drawFittedText( "Camera: the module on the panel is a stand-in. The app follows kick-camera over its control socket.", x0, 422, w, 28, juce::Justification::centredLeft, 2 );
 
             auto r = juce::Rectangle<int>( x0, 456, w, getHeight() - 466 );
             g.setColour( juce::Colour( 0xff0c0d10 ) );
@@ -1420,9 +1486,45 @@ namespace
         bool keyStateChanged( bool ) override
         {
             static const juce::String padKeys = "zxcvasdfqwer1234"; // pad 1 is bottom left, like the hardware
+
+            // Hold G for gesture keys: 1 swipe left, 2 swipe right, 3 open palm, 4 fist, 5 pinch start, 6 pinch change,
+            // 7 pinch end. Left and right then move the pinch aperture instead of turning the encoder. The digits
+            // 1 to 4 are pad keys, so they are not pads while G is held.
+            const bool gestureMode = juce::KeyPress::isKeyCurrentlyDown( 'G' );
+            {
+                static const char* const gestureNames[7] = { "swipe_left", "swipe_right", "palm_hold", "fist", "pinch_start", "pinch_change", "pinch_end" };
+                for( int i = 0; i < 7; ++i )
+                {
+                    const bool down = gestureMode && juce::KeyPress::isKeyCurrentlyDown( (int)'1' + i );
+                    if( down && !gestureKeyHeld[(size_t)i] )
+                    {
+                        if( i == 4 )
+                        {
+                            pinching = true;
+                            pinchValue = 0.5f;
+                        }
+                        sendGesture( gestureNames[i], pinchValue );
+                        if( i == 6 )
+                            pinching = false;
+                    }
+                    gestureKeyHeld[(size_t)i] = down;
+                }
+                const bool left  = gestureMode && juce::KeyPress::isKeyCurrentlyDown( juce::KeyPress::leftKey );
+                const bool right = gestureMode && juce::KeyPress::isKeyCurrentlyDown( juce::KeyPress::rightKey );
+                if( ( left && !gestureLeftHeld ) || ( right && !gestureRightHeld ) )
+                {
+                    pinchValue = juce::jlimit( 0.f, 1.f, pinchValue + ( right ? 0.1f : -0.1f ) );
+                    if( pinching )
+                        sendGesture( "pinch_change", pinchValue );
+                }
+                gestureLeftHeld  = left;
+                gestureRightHeld = right;
+            }
+
             for( int i = 0; i < numPads; ++i )
             {
-                const bool down = juce::KeyPress::isKeyCurrentlyDown( padKeys[i] );
+                const bool isDigit = padKeys[i] >= '1' && padKeys[i] <= '4';
+                const bool down = !( gestureMode && isDigit ) && juce::KeyPress::isKeyCurrentlyDown( padKeys[i] );
                 if( down && !pressedPads[(size_t)i] ) padDown( i, (int)velocity.getValue() );
                 if( !down && pressedPads[(size_t)i] && activePad != i ) padUp( i );
             }
@@ -1433,7 +1535,8 @@ namespace
                 { juce::KeyPress::escapeKey, btnBack }, { juce::KeyPress::tabKey, btnStop } };
             for( auto& m : maps )
             {
-                const bool down = juce::KeyPress::isKeyCurrentlyDown( m.key );
+                const bool arrow = m.key == juce::KeyPress::leftKey || m.key == juce::KeyPress::rightKey;
+                const bool down = !( gestureMode && arrow ) && juce::KeyPress::isKeyCurrentlyDown( m.key );
                 if( down && !pressedButtons[(size_t)m.button] ) buttonDown( m.button );
                 if( !down && pressedButtons[(size_t)m.button] && activeButton != m.button ) buttonUp( m.button );
             }
@@ -1451,6 +1554,16 @@ namespace
         }
 
         //==============================================================================
+        /// Sends one gesture to the app. `value` is the pinch aperture for the pinch events.
+        bool sendGesture( const juce::String& type, float value )
+        {
+            const bool ok = gestures.send( type, value );
+            logLine( juce::String( ok ? "TX gesture " : "gesture not sent (no app gesture server) " ) + type );
+            return ok;
+        }
+
+        float pinchAperture() const { return pinchValue; }
+
         juce::String lastLog() const { return logLines.empty() ? juce::String() : logLines.back(); }
 
         void nudgeKnob( int knob, int steps )
@@ -1643,6 +1756,11 @@ namespace
         float                        lastDragY{ 0 }, dragAccum{ 0 }, wheelAccum{ 0 };
         int                          heartbeatTicks{ 0 };
         std::deque<juce::String>     logLines;
+        GestureInjector              gestures;
+        std::array<bool, 7>          gestureKeyHeld{};
+        bool                         gestureLeftHeld{ false }, gestureRightHeld{ false };
+        bool                         pinching{ false };
+        float                        pinchValue{ 0.5f };
 
     };
 
@@ -1695,6 +1813,9 @@ namespace
     ///   sd in|out    usb in|out        snapshot <file.png>
     ///   expect connected               expect pad <1-16> <colourId|off>
     ///   expect led <name> on|off       expect cv <1-8> <minVolts>   quit [code]
+    ///   gesture <name> [value]         send a kick-gesture event to the app's gesture server
+    ///                                  (swipe_left swipe_right palm_hold fist pinch_start pinch_change pinch_end;
+    ///                                  value is the pinch aperture 0-1, default 0.5)
     class ScriptRunner : private juce::Thread
     {
     public:
@@ -1811,6 +1932,15 @@ namespace
                     onMain( [=] { surface.buttonDown( id ); } );
                     juce::Thread::sleep( hold );
                     onMain( [=] { surface.buttonUp( id ); } );
+                }
+                else if( cmd == "gesture" )
+                {
+                    const juce::String name  = t[1];
+                    const float        value = t.size() > 2 ? t[2].getFloatValue() : 0.5f;
+                    auto               sent  = std::make_shared<std::atomic<bool>>( false );
+                    onMain( [=] { *sent = surface.sendGesture( name, value ); } );
+                    if( !*sent )
+                        return fail( "could not reach the app's gesture server (is Kick running, and KICK_GESTURE_PORT right?)" );
                 }
                 else if( cmd == "knob" )
                     onMain( [=] { surface.nudgeKnob( t[1].getIntValue(), t[2].getIntValue() ); } );
