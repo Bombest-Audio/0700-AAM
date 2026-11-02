@@ -12,8 +12,17 @@
  *     size + 7 bytes), so frames sent to the app end with '\n'. Frames from the app do not.
  *
  * Usage:
- *   KickSurface [--root <dir>] [--tcp <port>] [--script <file>] [--no-window-focus]
+ *   KickSurface [--root <dir>] [--tcp <port>] [--script <file>] [--no-window-focus] [--dump-leds <file>]
+ *   KickSurface --replay <trace> [--dump-leds <file>]
  *   The tty path is printed as "KICK_SERIAL_PORT=<path>" and linked at <root>/dev/ttymxc0.
+ *
+ * --dump-leds writes the LED model (Surface::ledModelJson) to a file as one line of JSON when the app quits.
+ * --replay plays the RX lines of a KICK_EMU_TRACE file into the frame parser with no window and no serial line,
+ * writes the dump and exits. Firmware/kick-mcu does the same (kick-mcu-sim --replay) and the two files are
+ * compared, see Firmware/kick-mcu/README.md.
+ *
+ * Environment:
+ *   KICK_EMU_TRACE=<file>  write every byte on the serial line to <file> (see the Trace class).
  *
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
@@ -29,99 +38,22 @@
     #include <unistd.h>
 #endif
 
+#include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstdio>
 #include <deque>
 #include <functional>
 #include <iostream>
 #include <mutex>
 
+#include "panel_paint.h"
+#include "protocol.h"
+
 namespace
 {
-    //==============================================================================
-    // Protocol constants, mirrored from Kick/modules/contracts/dcl/dcl_contracts.h and
-    // ComProtocol/PktMgr/PktMgr.hpp. Kept local so the Surface builds without the Kick tree.
-
-    enum PacketType
-    {
-        PktSystem = 0,
-        PktButton,
-        PktLed,
-        PktPad,
-        PktKnobs,
-        PktMidi,
-        PktCv,
-        PktSlider
-    };
-
-    enum SysCmd
-    {
-        SysResetGd = 0,
-        SysGetSwVer,
-        SysCommInit,
-        SysSwUpdate,
-        SysCheckCommStatus,
-        SysBpm,
-        SysReconnect,
-        SysShutdown
-    };
-
-    enum LedCmd
-    {
-        LedSingle = 0,
-        LedBlink,
-        LedAll
-    };
-
-    enum PadCmd
-    {
-        PadState = 0,
-        PadSetSingle,
-        PadSetAllSingleColour,
-        PadSetAllMultiColour,
-        PadSettings,
-        PadColourMode,
-        PadSetColourState,
-        PadSetAfterTouch,
-        PadSetBlinking,
-        PadSetStepSingle,
-        PadSetStepAll
-    };
-
-    enum SliderCmd
-    {
-        SliderTouch = 0,
-        SliderBar,
-        SliderLevel,
-        SliderIndividual
-    };
-
-    enum PadButtonState
-    {
-        StateOff = 0,
-        StateOn,
-        StateSampleAssigned,
-        StateSampleNotAssigned,
-        StateOnBlink,
-        StateOffBlink
-    };
-
-    constexpr int numPads    = 16;
-    constexpr int numButtons = 53;
-    constexpr int numKnobs   = 16;
-    constexpr int numCv      = 8;
-
-    constexpr int btnShift      = 31;
-    constexpr int btnPlay       = 45;
-    constexpr int btnStop       = 44;
-    constexpr int btnEnter      = 26;
-    constexpr int btnKnobCcw    = 28;
-    constexpr int btnKnobCw     = 30;
-    constexpr int btnBack       = 29;
-    constexpr int colourTrans   = 15;
-    constexpr int knobCenter    = 0;
-    constexpr int knobCmdRotary = 0;
-    constexpr int knobCmdQlink  = 1;
+    using namespace surface_protocol;
+    using surface_paint::drawPot;
 
     const char* const buttonNames[numButtons] = {
         "Bank A", "Bank B", "Bank C", "Bank D", "Bank E", "Bank F", "Bank G", "Bank H",
@@ -181,6 +113,80 @@ namespace
     }
 
     //==============================================================================
+    /// Optional record of the serial line, enabled by KICK_EMU_TRACE=<file>. Firmware tests replay
+    /// it (Firmware/kick-mcu/tests), so the format is a contract; change it there too.
+    ///
+    ///   # kick-emu-trace v1
+    ///   <ms> TX <hex>      one frame this app sent to Kick, the exact bytes written (trailer included)
+    ///   <ms> RX <hex>      one read() from Kick, the bytes as they arrived (reads can hold several frames)
+    ///   <ms> DEC t<type> d<dir> c<cmd> [<byte> ...]
+    ///                      a frame this app decoded from RX with a good CRC, in the order it decoded it
+    ///
+    /// <ms> is milliseconds since the trace was opened, three decimals. Hex is lower-case, two digits
+    /// per byte, separated by single spaces. Each line is flushed as it is written.
+    class Trace
+    {
+    public:
+        ~Trace() { close(); }
+
+        bool open( const juce::String& path )
+        {
+            std::lock_guard<std::mutex> g( lock );
+            if( file != nullptr )
+                return true;
+            file = std::fopen( path.toRawUTF8(), "w" );
+            if( file == nullptr )
+                return false;
+            startMs = juce::Time::getMillisecondCounterHiRes();
+            std::fputs( "# kick-emu-trace v1\n", file );
+            std::fflush( file );
+            return true;
+        }
+
+        void close()
+        {
+            std::lock_guard<std::mutex> g( lock );
+            if( file != nullptr )
+                std::fclose( file );
+            file = nullptr;
+        }
+
+        void tx( const std::vector<uint8_t>& bytes ) { line( "TX", bytes.data(), bytes.size() ); }
+        void rx( const uint8_t* bytes, size_t length ) { line( "RX", bytes, length ); }
+
+        void decoded( int type, int dir, int cmd, const std::vector<int>& data )
+        {
+            std::lock_guard<std::mutex> g( lock );
+            if( file == nullptr )
+                return;
+            std::fprintf( file, "%.3f DEC t%d d%d c%d [", now(), type, dir, cmd );
+            for( size_t i = 0; i < data.size(); ++i )
+                std::fprintf( file, i == 0 ? "%d" : " %d", data[i] );
+            std::fputs( "]\n", file );
+            std::fflush( file );
+        }
+
+    private:
+        double now() const { return juce::Time::getMillisecondCounterHiRes() - startMs; }
+
+        void line( const char* tag, const uint8_t* bytes, size_t length )
+        {
+            std::lock_guard<std::mutex> g( lock );
+            if( file == nullptr )
+                return;
+            std::fprintf( file, "%.3f %s", now(), tag );
+            for( size_t i = 0; i < length; ++i )
+                std::fprintf( file, " %02x", bytes[i] );
+            std::fputc( '\n', file );
+            std::fflush( file );
+        }
+
+        std::mutex lock;
+        FILE*      file{ nullptr };
+        double     startMs{ 0 };
+    };
+
+    //==============================================================================
     /// The serial line to Kick: a pty by default (not on Windows), or a TCP listener. Kick
     /// connects to the listener through a tcp:// KICK_SERIAL_PORT, and QEMU's serial chardev does too.
     class Link : private juce::Thread
@@ -199,6 +205,7 @@ namespace
         }
 
         std::function<void( const Frame& )> onFrame;
+        Trace                               trace;
 
 #if !JUCE_WINDOWS
         /// Opens a pty and returns the slave path. The slave stays open here so the
@@ -237,6 +244,14 @@ namespace
 
         bool isUp() const { return dataFd.load() >= 0 || tcpUp.load(); }
 
+        /// Feeds bytes to the frame parser as if they had arrived on the line. Used by --replay.
+        void feedBytes( const uint8_t* bytes, size_t length )
+        {
+            for( size_t i = 0; i < length; ++i )
+                feed( bytes[i] );
+        }
+        void send( const Packet& p ) { send( p.type, p.cmd, p.data ); }
+
         void send( int type, int cmd, const std::vector<int>& data )
         {
             std::vector<uint8_t> out{ 'M', 'T', (uint8_t)type, 0 /* request */, (uint8_t)cmd, (uint8_t)( data.size() + 1 ) };
@@ -244,6 +259,7 @@ namespace
                 out.push_back( (uint8_t)v );
             out.push_back( crc8( out ) );
             out.push_back( '\n' ); // trailing byte Kick's reader counts in its frame length
+            trace.tx( out );
 
             std::lock_guard<std::mutex> g( writeLock );
             if( tcpUp.load() )
@@ -330,6 +346,7 @@ namespace
                     const int n = client->read( buf, (int)sizeof( buf ), false );
                     if( n > 0 )
                     {
+                        trace.rx( buf, (size_t)n );
                         for( int i = 0; i < n; ++i )
                             feed( buf[i] );
                     }
@@ -352,6 +369,7 @@ namespace
                 const auto n = ::read( fd, buf, sizeof( buf ) );
                 if( n > 0 )
                 {
+                    trace.rx( buf, (size_t)n );
                     for( ssize_t i = 0; i < n; ++i )
                         feed( buf[i] );
                 }
@@ -417,8 +435,12 @@ namespace
                         state = Crc;
                     break;
                 case Crc:
-                    if( crc8( raw ) == b && onFrame )
-                        onFrame( frame );
+                    if( crc8( raw ) == b )
+                    {
+                        trace.decoded( frame.type, frame.dir, frame.cmd, frame.data );
+                        if( onFrame )
+                            onFrame( frame );
+                    }
                     state = Hdr1;
                     break;
             }
@@ -505,7 +527,7 @@ namespace
     };
     const Pot panelPots[] = {
         { potMaster, "MASTER", 67, 152, 32 }, { potRec, "REC", 67, 276, 32 },
-        { 1, "P1", 920, 78, 30 }, { 2, "P2", 920, 177, 30 }, { 3, "P3", 920, 276, 30 }, { 4, "P4", 920, 376, 30 },
+        { 1, "P1", 920, 78, 27 }, { 2, "P2", 920, 177, 27 }, { 3, "P3", 920, 276, 27 }, { 4, "P4", 920, 376, 27 },
     };
 
     constexpr float padX0 = 140.6f, padY0 = 502.4f, padW = 99.0f, padH = 95.0f, padDx = 121.7f, padDy = 118.4f;
@@ -722,6 +744,25 @@ namespace
         ~Surface() override { link.onFrame = nullptr; }
 
         void setTtyLabel( const juce::String& s ) { ttyLabel = s; }
+
+        /// The LED model as one line of JSON, byte for byte what kick-mcu-sim --dump-leds writes
+        /// (Firmware/kick-mcu/sim/led_json.cpp):
+        ///   {"buttons":[<53 states>],"pads":[[state,colour,offColour,velocity] * 16],"slider":<percent>}
+        juce::String ledModelJson() const
+        {
+            const juce::ScopedLock sl( model.lock );
+            juce::String           out = "{\"buttons\":[";
+            for( int i = 0; i < numButtons; ++i )
+                out << ( i == 0 ? "" : "," ) << model.leds[(size_t)i];
+            out << "],\"pads\":[";
+            for( int i = 0; i < numPads; ++i )
+            {
+                const auto& p = model.pads[(size_t)i];
+                out << ( i == 0 ? "" : "," ) << "[" << p.state << "," << p.colour << "," << p.offColour << "," << p.velocity << "]";
+            }
+            out << "],\"slider\":" << model.sliderPercent << "}\n";
+            return out;
+        }
         const juce::File& deviceRoot() const { return root; }
 
         //==============================================================================
@@ -732,7 +773,7 @@ namespace
             if( !juce::isPositiveAndBelow( pad, numPads ) )
                 return;
             pressedPads[(size_t)pad] = true;
-            link.send( PktPad, PadState, { pad, 1, vel, (int)pressure.getValue() - 1 } );
+            link.send( packets::pad( pad, true, vel, (int)pressure.getValue() - 1 ) );
             logLine( "TX pad " + juce::String( pad ) + " down vel " + juce::String( vel ) );
         }
 
@@ -741,7 +782,7 @@ namespace
             if( !juce::isPositiveAndBelow( pad, numPads ) )
                 return;
             pressedPads[(size_t)pad] = false;
-            link.send( PktPad, PadState, { pad, 0, 0, 0 } );
+            link.send( packets::pad( pad, false, 0, 0 ) );
             logLine( "TX pad " + juce::String( pad ) + " up" );
         }
 
@@ -750,7 +791,7 @@ namespace
             if( !juce::isPositiveAndBelow( id, numButtons ) )
                 return;
             pressedButtons[(size_t)id] = true;
-            link.send( PktButton, 0, { id, 1 } );
+            link.send( packets::button( id, true ) );
             logLine( "TX button " + juce::String( buttonNames[id] ) + " down" );
         }
 
@@ -759,7 +800,7 @@ namespace
             if( !juce::isPositiveAndBelow( id, numButtons ) )
                 return;
             pressedButtons[(size_t)id] = false;
-            link.send( PktButton, 0, { id, 0 } );
+            link.send( packets::button( id, false ) );
             logLine( "TX button " + juce::String( buttonNames[id] ) + " up" );
         }
 
@@ -768,21 +809,20 @@ namespace
         {
             if( steps == 0 || !juce::isPositiveAndBelow( knob, numKnobs + 1 ) )
                 return;
-            link.send( PktKnobs, knob == knobCenter ? knobCmdRotary : knobCmdQlink, { knob, steps > 0 ? 1 : 0, std::abs( steps ) } );
+            link.send( packets::knob( knob, steps ) );
             logLine( "TX knob " + juce::String( knob ) + " " + juce::String( steps ) );
         }
 
         void setStrip( int percent )
         {
             stripValue = juce::jlimit( 0, 100, percent );
-            link.send( PktSlider, SliderTouch, { stripValue } );
+            link.send( packets::strip( stripValue ) );
             logLine( "TX strip " + juce::String( stripValue ) );
         }
 
         void releaseStrip()
         {
-            // The strip reports 0 when the finger lifts, which is how the app ends a touch.
-            link.send( PktSlider, SliderTouch, { 0 } );
+            link.send( packets::strip( 0 ) );
         }
 
         void setMedia()
@@ -847,19 +887,6 @@ namespace
         int   panelSide() const { return getHeight(); }
 
         //==============================================================================
-        static void drawPot( juce::Graphics& g, float cx, float cy, float r, float angle )
-        {
-            g.setColour( juce::Colours::black.withAlpha( 0.6f ) );
-            g.fillEllipse( cx - r - 3, cy - r - 1, ( r + 3 ) * 2, ( r + 3 ) * 2 );
-            juce::ColourGradient body( juce::Colour( 0xff3c3f47 ), cx - r * 0.5f, cy - r * 0.6f, juce::Colour( 0xff0e0f12 ), cx + r * 0.6f, cy + r * 0.7f, false );
-            g.setGradientFill( body );
-            g.fillEllipse( cx - r, cy - r, r * 2, r * 2 );
-            g.setColour( juce::Colour( 0xff555966 ) );
-            g.drawEllipse( cx - r, cy - r, r * 2, r * 2, 1.2f );
-            g.setColour( juce::Colour( 0xffe8eaf0 ) );
-            g.drawLine( cx + std::sin( angle ) * r * 0.25f, cy - std::cos( angle ) * r * 0.25f, cx + std::sin( angle ) * r * 0.92f, cy - std::cos( angle ) * r * 0.92f, 3.0f );
-        }
-
         bool ledLit( int id, bool phase ) const
         {
             if( !juce::isPositiveAndBelow( id, numButtons ) )
@@ -927,6 +954,9 @@ namespace
                 if( pot.knob >= 100 )
                 {
                     g.drawText( pot.label, (int)pot.cx - 40, (int)( pot.cy - pot.r - 28 ), 80, 14, juce::Justification::centred );
+                    // End-stop dots at 7 and 5 o'clock, as printed on the unit
+                    for( const float a : { -2.36f, 2.36f } )
+                        g.fillEllipse( pot.cx + std::sin( a ) * ( pot.r + 7 ) - 1.5f, pot.cy - std::cos( a ) * ( pot.r + 7 ) - 1.5f, 3.0f, 3.0f );
                     g.setFont( 9.0f );
                     g.drawText( "MIN", (int)pot.cx - 44, (int)( pot.cy + pot.r + 12 ), 40, 12, juce::Justification::centred );
                     g.drawText( "MAX", (int)pot.cx + 4, (int)( pot.cy + pot.r + 12 ), 40, 12, juce::Justification::centred );
@@ -1021,18 +1051,31 @@ namespace
                 g.setColour( Colour( 0xff2a2c33 ) );
                 g.drawRoundedRectangle( jogBox, 22, 1.5f );
                 const bool live = model.appLive;
-                for( int i = 0; i < 32; ++i )
-                {
-                    const float a = (float)i / 32.0f * juce::MathConstants<float>::twoPi;
-                    const float x = jogCentre.x + std::sin( a ) * ( jogR + 8 ), y = jogCentre.y - std::cos( a ) * ( jogR + 8 );
-                    g.setColour( live ? Colour( 0xffff2a2a ) : Colour( 0xff3a1c1c ) );
-                    g.fillEllipse( x - 2.2f, y - 2.2f, 4.4f, 4.4f );
-                }
-                drawPot( g, jogCentre.x, jogCentre.y, jogR - 6, knobAngle[0] );
+                const auto disc = [&]( float rad ) { return juce::Rectangle<float>( rad * 2, rad * 2 ).withCentre( jogCentre ); };
+
+                // Glossy collar the knob sits in
+                g.setGradientFill( juce::ColourGradient( Colour( 0xff3a3d44 ), jogCentre.x - jogR, jogCentre.y - jogR, Colour( 0xff050506 ),
+                                                         jogCentre.x + jogR * 0.6f, jogCentre.y + jogR, false ) );
+                g.fillEllipse( disc( jogR + 12 ) );
+                g.setColour( Colour( 0xff050506 ) );
+                g.fillEllipse( disc( jogR + 2 ) );
+
+                // Solid LED ring, with a glow while the app is live
+                const Colour ring = live ? Colour( 0xffff3344 ) : Colour( 0xff3a1c1f );
+                if( live )
+                    for( const float w : { 9.0f, 6.0f } )
+                    {
+                        g.setColour( ring.withAlpha( w > 8 ? 0.12f : 0.25f ) );
+                        g.drawEllipse( disc( jogR - 3 ), w );
+                    }
+                g.setColour( ring );
+                g.drawEllipse( disc( jogR - 3 ), 3.0f );
+
+                drawPot( g, jogCentre.x, jogCentre.y, jogR - 9, knobAngle[0], 8, false );
                 if( pressedButtons[btnEnter] )
                 {
                     g.setColour( juce::Colours::white.withAlpha( 0.2f ) );
-                    g.fillEllipse( jogCentre.x - jogR + 6, jogCentre.y - jogR + 6, ( jogR - 6 ) * 2, ( jogR - 6 ) * 2 );
+                    g.fillEllipse( disc( jogR - 9 ) );
                 }
             }
 
@@ -1205,9 +1248,12 @@ namespace
         {
             drawerOpen = open;
             devButton.setButtonText( open ? "hide" : "dev" );
-            setSize( open ? getHeight() + drawerWidth : getHeight(), getHeight() );
+            setSize( widthForHeight( getHeight() ), getHeight() );
             resized();
         }
+
+        /// The panel is square and scales with the height; the drawer beside it keeps a fixed width.
+        int widthForHeight( int h ) const { return h + ( drawerOpen ? drawerWidth : 0 ); }
 
         //==============================================================================
         bool shiftHeld() const { return pressedButtons[btnShift]; }
@@ -1356,6 +1402,10 @@ namespace
             for( auto& pot : panelPots )
                 if( p.getDistanceFrom( { pot.cx, pot.cy } ) <= pot.r + 6 )
                     knob = pot.knob < 100 ? pageBase + pot.knob : pot.knob;
+            // Trackpad momentum keeps scrolling after the fingers lift, so a flick would keep turning the knob
+            // by an amount that depends on how fast it was. Only the fingers' own movement counts.
+            if( w.isInertial )
+                return;
             wheelAccum += w.deltaY * ( w.isReversed ? -1.0f : 1.0f ) * 8.0f;
             const int steps = (int)wheelAccum;
             if( steps != 0 )
@@ -1415,11 +1465,10 @@ namespace
             if( !juce::isPositiveAndBelow( knob, numKnobs + 1 ) )
                 return;
             auto& angle = knobAngle[(size_t)knob];
-            angle += (float)steps * ( knob == knobCenter ? 0.25f : 0.1f );
-            // Q-Link knobs are endless encoders but read like pots on screen: stop at +-135 degrees.
-            // The centre encoder is a free-spinning dial.
-            if( knob != knobCenter )
-                angle = juce::jlimit( -2.356f, 2.356f, angle );
+            // The Q-Link knobs and the centre encoder are endless: the unit sends relative steps and the app owns
+            // the value (a velocity of 0-127, a ratchet of 1-8 and so on, depending on the screen), so there is no
+            // stop to draw. Only the analog MASTER and REC pots above have one.
+            angle = std::fmod( angle + (float)steps * ( knob == knobCenter ? 0.25f : 0.1f ), juce::MathConstants<float>::twoPi );
             turnKnob( knob, steps );
         }
 
@@ -1437,7 +1486,7 @@ namespace
                 if( live && ++heartbeatTicks >= 90 )
                 {
                     heartbeatTicks = 0;
-                    link.send( PktSystem, SysCheckCommStatus, { 2 } );
+                    link.send( packets::commStatus( 2 ) );
                 }
             }
             repaint();
@@ -1472,11 +1521,11 @@ namespace
                         if( d( 0 ) == 1 )
                         {
                             model.appLive = false;
-                            link.send( PktSystem, SysGetSwVer, { 1, 0 } );
-                            link.send( PktSystem, SysCheckCommStatus, { 1 } );
+                            link.send( packets::softwareVersion() );
+                            link.send( packets::commStatus( 1 ) );
                         }
                         else
-                            link.send( PktSystem, SysCheckCommStatus, { 2 } );
+                            link.send( packets::commStatus( 2 ) );
                     }
                     else if( f.cmd == SysCheckCommStatus && d( 0 ) == 2 )
                         model.appLive = true;
@@ -1488,7 +1537,19 @@ namespace
                     if( f.cmd == LedSingle || f.cmd == LedBlink )
                     {
                         if( juce::isPositiveAndBelow( d( 0 ), numButtons ) )
-                            model.leds[(size_t)d( 0 )] = f.cmd == LedBlink ? StateOnBlink : d( 1 );
+                        {
+                            const int state = f.cmd == LedBlink ? StateOnBlink : d( 1 );
+                            // INFERRED: the app switches banks, Play/Stop and Full/Half Level on and never
+                            // off, so the unit must be clearing the rest of the group. Lighting one member
+                            // turns the others off. Firmware/kick-mcu does the same (output/commands.cpp).
+                            if( state != StateOff )
+                                for( const auto& group : radioGroups )
+                                    if( d( 0 ) >= group[0] && d( 0 ) <= group[1] )
+                                        for( int other = group[0]; other <= group[1]; ++other )
+                                            if( other != d( 0 ) )
+                                                model.leds[(size_t)other] = StateOff;
+                            model.leds[(size_t)d( 0 )] = state;
+                        }
                     }
                     else if( f.cmd == LedAll )
                         model.leds.fill( d( 0 ) );
@@ -1528,20 +1589,23 @@ namespace
                     for( int i = 0; i < numPads; ++i )
                         set( i, d( 0 ), d( 1 ), colourTrans, 127 );
                     break;
-                case PadSetAllMultiColour:
-                    for( int i = 0; i < numPads; ++i )
+                case PadSetAllMultiColour: // state, then one colour per pad; as many pads as the frame has colours
+                    for( int i = 0; i < std::min( numPads, (int)f.data.size() - 1 ); ++i )
                         set( i, d( 0 ), d( 1 + (size_t)i ), colourTrans, 127 );
                     break;
-                case PadSetColourState: // 16 colours, then 16 states
-                    for( int i = 0; i < numPads; ++i )
-                        set( i, d( numPads + (size_t)i ), d( (size_t)i ), colourTrans, 127 );
+                case PadSetColourState: // N colours, then N states
+                    for( int i = 0; i < std::min( numPads, (int)f.data.size() / 2 ); ++i )
+                        set( i, d( f.data.size() / 2 + (size_t)i ), d( (size_t)i ), colourTrans, 127 );
                     break;
                 case PadSetBlinking: set( d( 0 ), d( 1 ), d( 2 ), d( 3 ), 127 ); break;
                 case PadSetStepSingle: set( d( 0 ), d( 1 ), d( 2 ), colourTrans, d( 3 ) ); break;
-                case PadSetStepAll: // state, 16 colours, 16 velocities
-                    for( int i = 0; i < numPads; ++i )
-                        set( i, d( 0 ), d( 1 + (size_t)i ), colourTrans, d( 1 + numPads + (size_t)i ) );
+                case PadSetStepAll: // state, N colours, N velocities
+                {
+                    const int n = ( (int)f.data.size() - 1 ) / 2;
+                    for( int i = 0; i < std::min( numPads, n ); ++i )
+                        set( i, d( 0 ), d( 1 + (size_t)i ), colourTrans, d( 1 + (size_t)n + (size_t)i ) );
                     break;
+                }
                 default: break; // settings, colour mode and aftertouch enable change no LEDs
             }
         }
@@ -1859,6 +1923,17 @@ namespace
             root = rootPath.isNotEmpty() ? juce::File( rootPath ) : juce::File::getSpecialLocation( juce::File::userHomeDirectory ).getChildFile( "KickEmu" );
             root.getChildFile( "dev" ).createDirectory();
 
+            const auto tracePath = juce::SystemStats::getEnvironmentVariable( "KICK_EMU_TRACE", {} );
+            if( tracePath.isNotEmpty() && !link.trace.open( tracePath ) )
+                std::cerr << "KickSurface: cannot open KICK_EMU_TRACE file " << tracePath << std::endl;
+
+            dumpLedsPath = opt( "--dump-leds" );
+            if( opt( "--replay" ).isNotEmpty() )
+            {
+                replayTrace( opt( "--replay" ) );
+                return;
+            }
+
             juce::String ttyLabel;
             // Windows has no pty, so it always serves the line over TCP.
 #if JUCE_WINDOWS
@@ -1927,8 +2002,74 @@ namespace
             }
         }
 
+        /// --replay: no window and no serial line. The RX lines of the trace go through the same frame
+        /// parser and handleFrame() as live traffic, then the LED model is written out and the app quits.
+        /// The frames are queued on the message thread by the parser's callback, so the finish is queued
+        /// behind them.
+        void replayTrace( const juce::String& path )
+        {
+            const juce::File file( juce::File::getCurrentWorkingDirectory().getChildFile( path ) );
+            if( !file.existsAsFile() )
+            {
+                std::cerr << "KickSurface: trace not found: " << file.getFullPathName() << std::endl;
+                setApplicationReturnValue( 2 );
+                quit();
+                return;
+            }
+            juce::StringArray lines;
+            file.readLines( lines );
+
+            replaySurface = std::make_unique<Surface>( link, root );
+            int rxLines   = 0;
+            for( const auto& line : lines )
+            {
+                auto tokens = juce::StringArray::fromTokens( line, " ", "" );
+                tokens.removeEmptyStrings();
+                if( tokens.size() < 2 || tokens[1] != "RX" )
+                    continue;
+                std::vector<uint8_t> bytes;
+                for( int i = 2; i < tokens.size(); ++i )
+                    bytes.push_back( (uint8_t)tokens[i].getHexValue32() );
+                link.feedBytes( bytes.data(), bytes.size() );
+                ++rxLines;
+            }
+            if( rxLines == 0 )
+            {
+                std::cerr << "KickSurface: the trace has no RX lines" << std::endl;
+                setApplicationReturnValue( 2 );
+                quit();
+                return;
+            }
+            std::cerr << "KickSurface: replayed " << rxLines << " RX lines" << std::endl;
+            juce::MessageManager::callAsync( [this] { quit(); });
+        }
+
+        bool writeLedDump( const Surface& surface )
+        {
+            if( dumpLedsPath.isEmpty() )
+                return true;
+            const auto json = surface.ledModelJson();
+            if( dumpLedsPath == "-" )
+            {
+                std::cout << json << std::flush;
+                return true;
+            }
+            const juce::File out( juce::File::getCurrentWorkingDirectory().getChildFile( dumpLedsPath ) );
+            out.deleteFile();
+            return out.replaceWithText( json, false, false, "\n" );
+        }
+
         void shutdown() override
         {
+            if( replaySurface != nullptr || window != nullptr )
+            {
+                if( !writeLedDump( replaySurface != nullptr ? *replaySurface : window->surface() ) )
+                {
+                    std::cerr << "KickSurface: cannot write " << dumpLedsPath << std::endl;
+                    setApplicationReturnValue( 2 );
+                }
+            }
+            replaySurface.reset();
             script.reset();
             events.reset();
             window.reset();
@@ -1946,15 +2087,56 @@ namespace
             {
                 setContentOwned( content, true );
                 setUsingNativeTitleBar( true );
+
+                // Start at the default size, or smaller when the screen's free area (menu bar and dock
+                // excluded) cannot hold it. The title bar is outside the bounds with a native title bar,
+                // so leave room for it.
+                constrainer.surface = content;
+                constrainer.setMinimumSize( content->widthForHeight( minHeight ), minHeight );
+                setConstrainer( &constrainer );
+                setResizable( true, false );
+                int h = content->getHeight();
+                if( auto* display = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay() )
+                    h = juce::jlimit( minHeight, h, display->userArea.getHeight() - titleBarAllowance );
+                content->setSize( content->widthForHeight( h ), h );
                 centreWithSize( content->getWidth(), content->getHeight() );
                 setVisible( true );
             }
+
+            ~Window() override { setConstrainer( nullptr ); }
 
             void closeButtonPressed() override { juce::JUCEApplication::getInstance()->systemRequestedQuit(); }
             Surface& surface() { return *content; }
 
         private:
-            Surface* content;
+            /// Keeps the window at the Surface's shape while it is resized: dragging a side edge sets the
+            /// height from the new width, anything else sets the width from the new height.
+            struct Constrainer : juce::ComponentBoundsConstrainer
+            {
+                Surface* surface = nullptr;
+
+                void checkBounds( juce::Rectangle<int>& bounds, const juce::Rectangle<int>& previous, const juce::Rectangle<int>& limits,
+                                  bool isStretchingTop, bool isStretchingLeft, bool isStretchingBottom, bool isStretchingRight ) override
+                {
+                    const int extra = surface->widthForHeight( 0 );
+                    if( ( isStretchingLeft || isStretchingRight ) && !isStretchingTop && !isStretchingBottom )
+                        bounds.setHeight( bounds.getWidth() - extra );
+                    bounds.setHeight( juce::jmax( getMinimumHeight(), bounds.getHeight() ) );
+                    if( !limits.isEmpty() )
+                        bounds.setHeight( juce::jmin( bounds.getHeight(), limits.getHeight() ) );
+                    bounds.setWidth( surface->widthForHeight( bounds.getHeight() ) );
+                    if( isStretchingLeft )
+                        bounds.setX( previous.getRight() - bounds.getWidth() );
+                    if( isStretchingTop )
+                        bounds.setY( previous.getBottom() - bounds.getHeight() );
+                }
+            };
+
+            static constexpr int minHeight         = 560;
+            static constexpr int titleBarAllowance = 32;
+
+            Surface*    content;
+            Constrainer constrainer;
         };
 
         juce::File                     root;
@@ -1962,6 +2144,8 @@ namespace
         std::unique_ptr<Window>        window;
         std::unique_ptr<EventListener> events;
         std::unique_ptr<ScriptRunner>  script;
+        std::unique_ptr<Surface>       replaySurface;
+        juce::String                   dumpLedsPath;
     };
 }
 

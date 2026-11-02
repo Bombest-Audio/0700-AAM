@@ -9,8 +9,10 @@
 #   emu/run.sh --camera             also start kick-camera (test pattern, camera off until "enable")
 #   emu/run.sh --camera-enable      like --camera, and open the camera right away
 #   emu/run.sh --camera-only        start only kick-camera, in the foreground (no Kick, no Surface)
+#   emu/run.sh --firmware           run the control surface firmware (Firmware/kick-mcu, kick-mcu-sim) in place of the
+#                                   Surface: headless, driven by --script (see Firmware/kick-mcu/sim/script_player.h)
 #
-# Environment: KICK_EMU_ROOT, KICK_EMU_CONTROL_PORT (50901), KICK_EMU_EVENT_PORT (50902),
+# Environment: MCU_BUILD_DIR (build/mcu, where cmake built kick-mcu-sim), KICK_EMU_ROOT, KICK_EMU_CONTROL_PORT (50901), KICK_EMU_EVENT_PORT (50902),
 # KICK_AUDIO_DEVICE (CoreAudio device name; default system output).
 # Camera: KICK_CAMERA_SOURCE = pattern (default) | webcam (emu/tools/camera-webcam.sh) | file (KICK_CAMERA_FILE, raw
 # YUYV 320x240 or Y4M). The service socket is $KICK_EMU_ROOT/run/kick-camera.sock and the frames are in shared
@@ -34,6 +36,7 @@ done
 
 SCRIPT=""
 USE_SURFACE=1
+USE_FIRMWARE=0
 TCP_PORT=""
 CAMERA=0
 CAMERA_ENABLE=0
@@ -45,6 +48,7 @@ while [[ $# -gt 0 ]]; do
         --script) SCRIPT="$2"; shift ;;
         --root) export KICK_EMU_ROOT="$2"; shift ;;
         --no-surface) USE_SURFACE=0 ;;
+        --firmware) USE_FIRMWARE=1 ;;
         --tcp) TCP_PORT="$2"; shift ;;
         --camera) CAMERA=1 ;;
         --camera-enable) CAMERA=1; CAMERA_ENABLE=1 ;;
@@ -54,7 +58,12 @@ while [[ $# -gt 0 ]]; do
     shift
 done
 
-if [[ "$CAMERA_ONLY" == 0 ]]; then
+MCU_SIM_BIN="$REPO/${MCU_BUILD_DIR:-build/mcu}/kick-mcu-sim"
+if [[ "$USE_FIRMWARE" == 1 ]]; then
+    [[ -x "$KICK_BIN" ]] || { echo "not built yet: run emu/build.sh" >&2; exit 1; }
+    [[ -x "$MCU_SIM_BIN" ]] || { echo "kick-mcu-sim not built: cmake -S Firmware/kick-mcu -B ${MCU_BUILD_DIR:-build/mcu} -G Ninja && cmake --build ${MCU_BUILD_DIR:-build/mcu}" >&2; exit 1; }
+    [[ "$USE_SURFACE" == 1 ]] || { echo "--firmware replaces the Surface; it cannot be combined with --no-surface" >&2; exit 2; }
+elif [[ "$CAMERA_ONLY" == 0 ]]; then
     [[ -x "$KICK_BIN" && -n "$SURFACE_BIN" ]] || { echo "not built yet: run emu/build.sh" >&2; exit 1; }
 fi
 
@@ -115,7 +124,13 @@ if [[ "$USE_SURFACE" == 1 ]]; then
     SURFACE_ARGS=(--root "$KICK_EMU_ROOT")
     [[ -n "$SCRIPT" ]] && SURFACE_ARGS+=(--script "$SCRIPT")
     [[ -n "$TCP_PORT" ]] && SURFACE_ARGS+=(--tcp "$TCP_PORT")
-    "$SURFACE_BIN" "${SURFACE_ARGS[@]}" >"$KICK_EMU_ROOT/surface.log" 2>&1 &
+    if [[ "$USE_FIRMWARE" == 1 ]]; then
+        # The firmware simulator reads Kick's log to check what the host decoded (`expect host` in a script).
+        : >"$KICK_EMU_ROOT/kick.log"
+        "$MCU_SIM_BIN" "${SURFACE_ARGS[@]}" --host-log "$KICK_EMU_ROOT/kick.log" >"$KICK_EMU_ROOT/surface.log" 2>&1 &
+    else
+        "$SURFACE_BIN" "${SURFACE_ARGS[@]}" >"$KICK_EMU_ROOT/surface.log" 2>&1 &
+    fi
     SURFACE_PID=$!
     PIDS+=("$SURFACE_PID")
 
