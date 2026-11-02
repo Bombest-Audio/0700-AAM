@@ -143,9 +143,10 @@ TEST_F( LedRig, AftertouchEnableStillReachesTheInputLayer )
     EXPECT_EQ( 0u, fw->hostFramesIgnored() );
 }
 
-TEST_F( LedRig, CommandsNotYetHandledAreStillCounted )
+TEST_F( LedRig, CommandsNobodyHandlesAreStillCounted )
 {
-    host( contract::PKT_SYSTEM, contract::SYS_BPM, { 0, 120 } );
+    // BPM, shutdown, update and version belong to the system layer now; RESET_GD has no handler.
+    host( contract::PKT_SYSTEM, contract::SYS_RESET_GD, {} );
     settle();
     EXPECT_EQ( 1u, fw->hostFramesIgnored() );
 }

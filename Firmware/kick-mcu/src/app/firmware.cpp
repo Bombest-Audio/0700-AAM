@@ -17,20 +17,46 @@ namespace app
     {
     }
 
+    namespace
+    {
+        /// The handshake's GET_SW_VER carries the version of the image that is running.
+        link::LinkConfig withVersion( link::LinkConfig link, const system::VersionNo& version )
+        {
+            link.session.versionMajor = version.major;
+            link.session.versionMinor = version.minor;
+            return link;
+        }
+    } // namespace
+
     Firmware::Firmware( bsp::IUart& uart, const bsp::IClock& clock, InputHardware hardware, bsp::ILedDriver& leds, const FirmwareConfig& config )
-        : link_( uart, clock, config.link )
+        : selfCheck_( system::runSelfCheck( config.system.flash, config.system.layout, config.system.boot, config.system.buildVersion ) )
+        , link_( uart, clock, withVersion( config.link, selfCheck_.version ) )
         , sink_( link_ )
         , scan_( hardware, sink_, clock, config.scan )
         , commands_( ledState_ )
         , blink_( clock, config.blinkPeriodMs )
         , refresh_( leds, ledState_, blink_, clock, config.render )
+        , system_( config.system, selfCheck_, link_.tx(), clock, &Firmware::quiesce, this )
+        , blinkFollowsBpm_( config.blinkFollowsBpm )
     {
+        sink_.setMute( &system_.quiescedFlag() );
         link_.setPassThrough( &Firmware::onHostFrame, this );
+    }
+
+    void Firmware::quiesce( void* context )
+    {
+        Firmware* self = static_cast<Firmware*>( context );
+        self->ledState_.reset();
+        self->refresh_.drawNow();
     }
 
     void Firmware::onHostFrame( void* context, const link::Frame& frame )
     {
         Firmware* self = static_cast<Firmware*>( context );
+        if( self->system_.handle( frame ) )
+            return;
+        if( self->system_.quiesced() && ( frame.type == contract::PKT_LED || frame.type == contract::PKT_PAD || frame.type == contract::PKT_SLIDER ) )
+            return; // the unit was told to shut down; it stays dark
         if( frame.type == contract::PKT_PAD && frame.cmd == contract::PAD_SET_AFTER_TOUCH && frame.length >= 1 )
         {
             self->scan_.pads().setAftertouchEnabled( frame.payload[0] != 0 );
@@ -45,6 +71,12 @@ namespace app
     {
         scan_.tick();
         link_.poll();
+        system_.poll( link_.session().streaming() );
+        if( blinkFollowsBpm_ && system_.bpm().valid() && system_.bpm().raw() != lastBpmApplied_ )
+        {
+            lastBpmApplied_ = system_.bpm().raw();
+            blink_.setPeriodMs( system_.bpm().beatPeriodMs() );
+        }
         refresh_.service();
     }
 
