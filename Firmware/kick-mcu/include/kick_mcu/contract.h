@@ -123,13 +123,10 @@ namespace contract
     /// The pad state byte in a PAD_STATE frame. The host acts on 1 (note on) and 0 (note off) only.
     constexpr uint8_t kPadStateReleased = 0;
     constexpr uint8_t kPadStatePressed  = 1;
-    /// Not in dcl_contracts.h. The host has no state for a pressure update, so this is a choice
-    /// with a cost either way. 1 would retrigger the note in every handler. 2 is ignored by
-    /// the handlers that test for 1 and 0 only (kick_PadPerform.cpp, kick_AppGrid.cpp), but
-    /// kick_MidiControlTabs.cpp sends a note-off for any state that is not 1, and
-    /// kick_PadPerform.cpp passes a default-constructed MidiMessage to the engine. Aftertouch
-    /// is only on while the host has asked for it (PAD_SET_AFTER_TOUCH), and both handlers see the
-    /// frame while it is. This needs a decision once the real MCU's aftertouch framing is known.
+    /// Not in dcl_contracts.h: a pressure update on a held pad. State 1 would retrigger the note and
+    /// 0 would end it, so this is a third value. The host handlers that test for 1 and 0 only
+    /// (kick_PadPerform.cpp, kick_AppGrid.cpp) ignore it, and kick_MidiControlTabs.cpp skips the
+    /// note-off for it (padStatePressureUpdate) and forwards only the aftertouch message.
     constexpr uint8_t kPadStateAftertouch = 2;
 
     /// Touch strip: 0 means the finger lifted, 1 to 100 is a position from the bottom.
