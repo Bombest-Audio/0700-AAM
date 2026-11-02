@@ -13,8 +13,13 @@ void CPktMgr::Init( void )
     m_ui8TxCommand       = 0;
     m_ui8RxFifoWritePos  = 0;
     m_ui8RxFifoReadPos   = 0;
+    m_ui8TxFifoWritePos  = 0;
+    m_ui8TxFifoReadPos   = 0;
     m_boFrameRcvComplete = FALSE;
     m_enPktDir           = EN_PKT_REQUEST;
+    m_rxCrcBytes.clear();
+    // Allocate once here so the receive path never allocates (ISR/driver context on the MCU).
+    m_rxCrcBytes.reserve( (size_t)mc_ui8RxFifoSize + 6 );
 
 #ifdef PKT_HEADER_AVAILABLE
     m_enFrmState = EN_FRM_STATE_INIT_1;
@@ -30,108 +35,88 @@ void CPktMgr::ClearReceiver( void )
     m_enPktDir           = EN_PKT_REQUEST;
     m_boFrameRcvComplete = FALSE;
     m_enFrmState         = EN_FRM_STATE_INIT_1;
-    m_rxFrame.clear();
+    m_rxCrcBytes.clear();
 }
 
 void CPktMgr::PushByteToRxFifo( uint8_t f_ui8Data )
 {
-    bool boRcvdCompleteMsg = FALSE;
+    std::vector<char>& rxBytes           = m_rxCrcBytes;
+    bool               boRcvdCompleteMsg = FALSE;
 
     switch( m_enFrmState )
     {
         case EN_FRM_STATE_INIT_1:
-            // Hunt for the 'M' that starts a frame. Anything else is line noise and must not reach the CRC.
-            m_rxFrame.clear();
-            if( f_ui8Data == 'M' )
+            // Line noise before the start byte is skipped, not folded into the CRC.
+            // While a complete frame awaits the consumer, a new frame is ignored whole so
+            // it cannot overwrite the pending frame's header or payload.
+            if( f_ui8Data == 'M' && !m_boFrameRcvComplete )
             {
-                m_rxFrame.push_back( f_ui8Data );
+                rxBytes.clear();
+                rxBytes.push_back( f_ui8Data );
                 m_enFrmState = EN_FRM_STATE_INIT_2;
             }
-
             break;
         case EN_FRM_STATE_INIT_2:
             if( f_ui8Data == 'T' )
             {
-                m_rxFrame.push_back( f_ui8Data );
+                rxBytes.push_back( f_ui8Data );
                 m_enFrmState = EN_FRM_STATE_TYPE;
             }
-            else if( f_ui8Data == 'M' )
+            else if( f_ui8Data != 'M' )
             {
-                // 'M' 'M' 'T': the first 'M' was noise, this one starts the frame.
-                m_rxFrame.assign( 1, (char)f_ui8Data );
-            }
-            else
-            {
-                m_rxFrame.clear();
+                // 'M' followed by 'M' is still a possible start; anything else is noise.
+                rxBytes.clear();
                 m_enFrmState = EN_FRM_STATE_INIT_1;
             }
-
             break;
         case EN_FRM_STATE_TYPE:
-
             m_enPktType  = (enumPacketType)f_ui8Data;
             m_enFrmState = EN_FRM_STATE_DIR;
-            m_rxFrame.push_back( f_ui8Data );
+            rxBytes.push_back( f_ui8Data );
             break;
         case EN_FRM_STATE_DIR:
-            m_rxFrame.push_back( f_ui8Data );
+            rxBytes.push_back( f_ui8Data );
             m_enPktDir   = (enumPacketDir)f_ui8Data;
             m_enFrmState = EN_FRM_STATE_ID;
             break;
         case EN_FRM_STATE_ID:
-            m_rxFrame.push_back( f_ui8Data );
+            rxBytes.push_back( f_ui8Data );
             m_ui8RxCommand = f_ui8Data;
             m_enFrmState   = EN_FRM_STATE_SIZE;
             break;
         case EN_FRM_STATE_SIZE:
-            m_rxFrame.push_back( f_ui8Data );
-            m_ui8FrameSize = ( f_ui8Data );
-            m_enFrmState   = EN_FRM_STATE_DATA;
-
-            // The size byte counts the payload plus the CRC, so the payload is size - 1 bytes. With no
-            // payload (size 0 or 1) there is nothing to collect and the CRC follows directly.
-            if( m_ui8FrameSize <= 1 )
+            rxBytes.push_back( f_ui8Data );
+            m_ui8FrameSize = f_ui8Data;
+            if( m_ui8FrameSize > mc_ui8RxFifoSize + PKTMGR_CRC_BYTE )
             {
-                m_enFrmState = EN_FRM_STATE_CRC;
-            }
-            else if( (int)m_ui8FrameSize - 1 > (int)mc_ui8RxFifoSize )
-            {
-                // Would overrun the RX fifo. Drop the frame and hunt for the next one.
-                ClearReceiver();
-            }
-            break;
-
-        case EN_FRM_STATE_DATA:
-            m_rxFrame.push_back( f_ui8Data );
-            if( m_ui8RxFifoWritePos < ( m_ui8FrameSize - 1 ) )
-            {
-                m_ptrui8RxFifo[m_ui8RxFifoWritePos] = f_ui8Data;
-                m_ui8RxFifoWritePos++;
-
-                if( m_ui8RxFifoWritePos == ( m_ui8FrameSize - 1 ) )
-                {
-                    m_enFrmState = EN_FRM_STATE_CRC;
-                }
-            }
-            break;
-        case EN_FRM_STATE_CRC:
-        {
-            uint8_t ui8CrcTemp = CrcGen( m_rxFrame );
-            if( ui8CrcTemp == f_ui8Data )
-            {
-                boRcvdCompleteMsg = TRUE;
-                m_enFrmState      = EN_FRM_STATE_INIT_1;
+                // Payload would overrun the RX FIFO: drop the frame and resync.
+                rxBytes.clear();
+                m_enFrmState = EN_FRM_STATE_INIT_1;
             }
             else
             {
-                // Bad CRC: forget the partial payload and resynchronise on the next 'M' 'T'.
-                ClearReceiver();
+                // INIT_1 admits a frame only when none is pending, so the FIFO is free.
+                m_ui8RxFifoWritePos = 0;
+                m_ui8RxFifoReadPos  = 0;
+                // The size byte counts payload plus the CRC byte, so 0 or 1 means no payload.
+                m_enFrmState = ( m_ui8FrameSize <= PKTMGR_CRC_BYTE ) ? EN_FRM_STATE_CRC : EN_FRM_STATE_DATA;
             }
-            m_rxFrame.clear(); // also on success: the next frame starts empty
             break;
-        }
-        default:
-            ClearReceiver();
+        case EN_FRM_STATE_DATA:
+            rxBytes.push_back( f_ui8Data );
+            m_ptrui8RxFifo[m_ui8RxFifoWritePos] = f_ui8Data;
+            m_ui8RxFifoWritePos++;
+            if( m_ui8RxFifoWritePos == ( m_ui8FrameSize - 1 ) )
+            {
+                m_enFrmState = EN_FRM_STATE_CRC;
+            }
+            break;
+        case EN_FRM_STATE_CRC:
+            boRcvdCompleteMsg = ( CrcGen( rxBytes ) == f_ui8Data );
+            rxBytes.clear();
+            // Good or bad, the frame is over: hunt for the next start byte so a
+            // rejected frame cannot wedge the receiver.
+            m_enFrmState = EN_FRM_STATE_INIT_1;
             break;
     }
 
@@ -160,7 +145,7 @@ uint8_t CPktMgr::CrcGen( std::vector<char>& f_txData )
 {
     uint8_t ui8CrcValue = 0xff;
     uint8_t j;
-    size_t  len = f_txData.size();
+    const size_t len = f_txData.size();
 
     for( size_t i = 0; i < len; i++ )
     {
