@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "kick_mcu/app/scan_loop.h"
+#include "kick_mcu/output/led_state.h"
 #include "sim_board.h"
 
 namespace kick_mcu
@@ -24,6 +25,8 @@ namespace sim
         std::function<void( bool )> setAftertouch;
         /// The host's log file as text so far; empty if there is none. Used by `expect host`.
         std::function<std::string()> hostLog;
+        /// The firmware's current LED table. Used by `expect led` and `expect pad`.
+        std::function<const output::LedFrame&()> ledTable;
     };
 
     /// A script is one command per line, `#` starts a comment. Commands:
@@ -43,6 +46,13 @@ namespace sim
     ///   expect host "<text>" [count] [timeoutMs]
     ///                                      wait until the host log, after the last mark, holds <text> on at least
     ///                                      `count` (default 1) lines; default timeout 3000
+    ///   expect led <button> on|off [timeoutMs]
+    ///                                      wait until that button's LED state is not OFF (on) or is OFF (off); the
+    ///                                      button is a name or code as for `press`, unquoted names may hold spaces;
+    ///                                      default timeout 3000. Same meaning as the Surface's `expect led`.
+    ///   expect pad <1-16> <colourId|off> [timeoutMs]
+    ///                                      wait until the pad has a state other than OFF and that PadColourIds value,
+    ///                                      or (off) is OFF or has colour 15 (no colour); default timeout 3000
     ///   quit [code]
     ///
     /// Aliases for scripts written for the emulator Surface: button = press, knob = turn, slider = strip.
@@ -103,6 +113,8 @@ namespace sim
             ExpectStreaming,
             MarkHost,
             ExpectHost,
+            ExpectLed,
+            ExpectPad,
             Aftertouch,
             Quit,
         };
@@ -114,7 +126,8 @@ namespace sim
             std::string       text;
             uint64_t          durationUs{ 0 }; ///< wait length, or how long a scheduled command lasts
             int               count{ 1 };
-            int               value{ 0 };      ///< quit code, or aftertouch on/off
+            int               value{ 0 };      ///< quit code, or aftertouch on/off, or the button code or pad index of an expect
+            int               want{ 0 };       ///< expect led: 1 for on, 0 for off. expect pad: a colour id, or -1 for off
             std::vector<Step> steps;
             std::string       source;
         };

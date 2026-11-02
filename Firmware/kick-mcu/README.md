@@ -53,7 +53,8 @@ include/kick_mcu/contract.h      wire constants and enums, checked against the h
 include/kick_mcu/bsp/bsp.h       board interfaces: IUart, IClock, and the ones later layers use
 include/kick_mcu/link/           frame_codec, rx_parser, tx_queue, session, link, spsc_ring
 include/kick_mcu/input/          debounce, velocity_curve, pads, encoders, strip, event_sink
-include/kick_mcu/app/            scan_loop, firmware (the main loop that ties the link to the inputs)
+include/kick_mcu/output/         led_state, commands, colours, blink, current_budget, led_renderer
+include/kick_mcu/app/            scan_loop, firmware (the main loop that ties the link to the inputs and the outputs)
 src/                             implementations
 bsp/sim/                         desktop UART, clock, fake panel and a byte-paced 230400 baud UART model
 sim/                             kick-mcu-sim: the firmware on the desktop, plus the script player
@@ -170,6 +171,33 @@ While the session is not streaming, every input is still read and tracked, but i
 
 All thresholds and times live in `ScanConfig` (`DebounceConfig`, `PadConfig`, `EncoderConfig`, `StripConfig`). The defaults are placeholders. The sensor part, the key matrix and the encoder part are not known until the board exists.
 
+## Output layer
+
+The host's LED, PAD and SLIDER packets land in a double-buffered table (`led_state.h`). `CommandDecoder` (`commands.h`) applies one packet at a time to the back buffer and commits it only if the whole packet checked out, so a multi-pad update appears atomically. The refresh task (`LedRefresh` in `led_renderer.h`) draws the front buffer into an `ILedDriver` every 10 ms and is the only thing that touches the hardware. The buffer is safe for one execution context; if the packet handler and the refresh run in different interrupt levels on the real MCU, the swap needs a critical section, and `led_state.h` says so.
+
+Every command and its payload layout is documented in `commands.h`, taken from the host senders in `Kick/modules/contracts/dcl/dcl_contracts_helper.cpp`. A packet that is too short or has a length that does not fit its command is counted as malformed and changes nothing; an id past the table is counted as out of range; an unknown command is counted as unknown. All three counters are in `CommandStats` and none of them crash or write.
+
+- Colours: 18 `PadColourIds` entries in `colours.h`, copied from the Surface, adjustable with `ColourTable::set`. Gamma defaults to 2.2 and is adjustable from 1 to 4.
+- Blink: one `BlinkClock` (500 ms period) drives every blinking pad and button, so they stay in phase.
+- Current: `current_budget.h` caps the estimated LED current. The arithmetic is in `docs/mcu-led-current-budget.md`. Its inputs are assumptions.
+- Radio groups: the host never turns an old bank LED off. The firmware clears the others in a group (banks, Play/Stop, Full/Half Level), as the Surface does. Whether the real MCU does is not known.
+
+### Comparing with the Surface
+
+Both programs replay a recorded host session and write the final LED table as one line of JSON:
+
+```bash
+build/mcu/kick-mcu-sim --replay emu/tests/traces/leds.trace --dump-leds -
+"build/surface/KickSurface_artefacts/Release/KICK Surface.app/Contents/MacOS/KICK Surface" --replay emu/tests/traces/leds.trace --dump-leds -
+emu/tools/compare-leds.sh            # runs both and diffs
+```
+
+`--dump-leds FILE` also works on a live run and writes the table at exit. The JSON holds the 53 button states, each pad's `[state, colour, offColour, velocity]` and the strip percent. The firmware keeps more than that (button colours, the strip mode), which the Surface does not model, so those are not compared.
+
+`leds.trace` is `leds-live.trace` (RX frames recorded from the unmodified host, boot-time pad clears and strip frames) plus synthetic frames from `emu/tools/make-led-trace.py`. The emulated host does not send button LED, blink, multi-colour or step frames on its own, so a purely recorded trace could not exercise them. The synthetic frames use the layouts from the host's senders. `leds.surface.json` is what the Surface produced for it.
+
+Where the Surface and the firmware differ on purpose: the Surface accepts a payload shorter than the layout and the firmware rejects it, and the Surface's handling of BLINK_SINGLE, SET_ALL and SLIDER_INDIVIDUAL payloads is a guess where the host never sends them. The trace avoids those.
+
 ## kick-mcu-sim
 
 The firmware, with the fake panel from `bsp/sim/`, on the desktop and headless. It serves the same pty or TCP line as the emulator Surface, so Kick connects to it unchanged. Frames leave at the moment a UART at 230400 baud would have finished sending them, and always whole.
@@ -179,7 +207,7 @@ cmake -S Firmware/kick-mcu -B build/mcu && cmake --build build/mcu
 build/mcu/kick-mcu-sim --root ~/KickEmu --script emu/tests/firmware-input.script --host-log ~/KickEmu/kick.log
 ```
 
-Options: `--root DIR`, `--tcp PORT`, `--script FILE`, `--host-log FILE`, `--curve linear|soft|hard`, `--tick-us N`. Without `--script` it runs until killed. `emu/run.sh --firmware` starts Kick against the built binary; see `emu/README.md`.
+Options: `--root DIR`, `--tcp PORT`, `--script FILE`, `--host-log FILE`, `--curve linear|soft|hard`, `--tick-us N`, `--dump-leds FILE` (write the LED table at exit, `-` for stdout), `--replay TRACE` (play a recorded session into the firmware with no serial line, then exit). Without `--script` it runs until killed. `emu/run.sh --firmware` starts Kick against the built binary; see `emu/README.md`.
 
 Script commands, one per line, `#` starts a comment:
 
@@ -192,13 +220,15 @@ Script commands, one per line, `#` starts a comment:
 | `strip <1-100> [holdMs]` | touch, hold, lift |
 | `aftertouch on\|off` | what the host's `PAD_SET_AFTER_TOUCH` does |
 | `expect streaming [timeoutMs]` | wait for the handshake |
+| `expect led <button> on\|off [timeoutMs]` | wait for a button LED in the firmware's table |
+| `expect pad <1-16> <colourId\|off> [timeoutMs]` | wait for a pad to show a colour (`off` is dark or Trans) |
 | `mark-host` | remember how much of the host log exists now |
 | `expect host "<text>" [count] [timeoutMs]` | wait for the host log, after the last mark, to hold `<text>` on at least `count` lines |
 | `quit [code]` | stop with this exit code |
 
 `button`, `knob` and `slider` are accepted as aliases for `press`, `turn` and `strip`. The whole script is parsed before anything runs, so a typo fails on its line number up front. A key release debounces for longer than a press, so two presses with no `wait` between them can reach the host out of order.
 
-`emu/tests/firmware-input.script` runs against the unmodified host and checks its log lines (`Data[0] : N Cmd : C type : T`) for a button, a pad with aftertouch, the jog wheel, a Q-Link knob and the strip.
+`emu/tests/firmware-input.script` runs against the unmodified host and checks its log lines (`Data[0] : N Cmd : C type : T`) for a button, a pad with aftertouch, the jog wheel, a Q-Link knob and the strip. `emu/tests/firmware-leds.script` checks the pad clear the host sends at startup against the firmware's table.
 
 ## Latency
 
@@ -235,6 +265,7 @@ These numbers hold only under the test's assumptions, which are requirements on 
 | `ScanLoop` | button order with SHIFT first, retry on refusal, suppression until the link streams, held keys at connect |
 | `Latency` | the table above, plus the 16-pad serialization |
 | `Sim` | the script player: every command, parse errors with line numbers, `expect host` |
+| `Decode`, `LedState`, `Colours`, `BlinkClock`, `CurrentBudget`, `Render`, `LedRig`, `LedReplay` | every `LedCmd`, `PadCmd` and `SliderCmd` with representative and malformed payloads, the double buffer, colour and gamma tables, blink phase, the current cap, rendering, the firmware's whole output path, and the replay against the Surface's table (set `KICK_SURFACE_BIN` to also run the Surface live) |
 | `Contract`, `PktMgrCrossCheck` | every enum in `contract.h` equals the host's (`static_assert`), and the host's own `PktMgr.cpp` is compiled in and run against the firmware codec in both directions, including a button, pad, knob and strip frame produced by the real scan loop |
 
 `emu/tests/traces/smoke.trace` was captured by running `KICK_EMU_TRACE=emu/tests/traces/smoke.trace emu/run.sh --script emu/tests/smoke.script` against the unmodified host. The format is described in `emu/README.md`. The replay test checks that the parser yields the frames the Surface decoded, that every frame the Surface sent re-encodes to the same bytes, and that the firmware answers the handshake byte for byte as the Surface does.
@@ -249,3 +280,9 @@ These numbers hold only under the test's assumptions, which are requirements on 
 - Scan CPU time on the target. The latency table assumes 100 us.
 - Velocity feel. The curves are checked for shape, not played.
 - That the host does something sensible with aftertouch frames (state 2). Reading the code, the MIDI control page turns one into a note-off and Pad Perform forwards an empty MIDI message. The framing needs a decision, ideally from the real MCU's behavior.
+- LED colours as they look, and the gamma that matches them. The colour table is the Surface's, not tuned on pads.
+- The LED driver chips, their bus and their pin mapping: the renderer talks to an `ILedDriver`, and the only implementation is the simulator's.
+- The current budget. Every number is an assumption (see `docs/mcu-led-current-budget.md`).
+- Whether the real MCU clears the other LEDs in a radio group, which the firmware assumes.
+- The strip LED count and what the host's SLIDER_INDIVIDUAL and level modes should look like.
+- The blink look at 500 ms and the velocity-to-brightness mapping of step pads.

@@ -91,6 +91,10 @@ namespace surface_protocol
     constexpr int btnKnobCw     = 30;
     constexpr int btnBack       = 29;
     constexpr int colourTrans   = 15;
+
+    /// Buttons whose LEDs form a radio group: lighting one turns the others off. Inferred, see handleFrame.
+    /// Banks A to H, Stop and Play, Full Level and Half Level.
+    constexpr int radioGroups[][2] = { { 0, 7 }, { 44, 45 }, { 48, 49 } };
     constexpr int knobCenter    = 0;
     constexpr int knobCmdRotary = 0;
     constexpr int knobCmdQlink  = 1;

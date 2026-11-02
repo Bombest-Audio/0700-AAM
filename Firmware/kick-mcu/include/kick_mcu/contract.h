@@ -133,6 +133,21 @@ namespace contract
     constexpr uint8_t kStripLift = 0;
     constexpr uint8_t kStripMax  = 100;
 
+    /// DeviceControlContracts::PadButtonState: the state byte of every LED, pad and blink command.
+    enum PadButtonState : uint8_t
+    {
+        STATE_OFF = 0,
+        STATE_ON,
+        STATE_SAMPLE_ASSIGNED,
+        STATE_SAMPLE_NOT_ASSIGNED,
+        STATE_ON_BLINK,
+        STATE_OFF_BLINK,
+    };
+
+    /// DeviceControlContracts::PadColourIds has 18 entries. 15 is PadColourTrans: no colour.
+    constexpr uint8_t kPadColourCount = 18;
+    constexpr uint8_t kPadColourTrans = 15;
+
     /// DeviceControlContracts::BtnCmd
     enum BtnCmd : uint8_t
     {

@@ -46,6 +46,7 @@ struct Sim : ::testing::Test
         hooks.streaming     = [this] { return fw->link().session().streaming(); };
         hooks.setAftertouch = [this]( bool on ) { fw->scan().pads().setAftertouchEnabled( on ); };
         hooks.hostLog       = [this] { return hostLog; };
+        hooks.ledTable      = [this]() -> const output::LedFrame& { return fw->leds().front(); };
         player              = std::make_unique<sim::ScriptPlayer>( board, config.scan, hooks );
         return player->load( script );
     }
@@ -227,4 +228,38 @@ TEST( ScriptButtons, NamesResolveCaseAndPunctuationInsensitively )
     EXPECT_EQ( -1, sim::findButton( "53" ) );
     EXPECT_EQ( -1, sim::findButton( "55" ) );
     EXPECT_EQ( -1, sim::findButton( "" ) );
+}
+
+TEST_F( Sim, ExpectLedAndExpectPadReadTheFirmwareTable )
+{
+    uart.injectRx( fromHost( contract::PKT_LED, contract::LED_SET_SINGLE_LED, { 30, contract::STATE_ON, 7 } ) );
+    uart.injectRx( fromHost( contract::PKT_PAD, contract::PAD_SET_SINGLE_PAD, { 4, contract::STATE_ON, 12 } ) );
+    ASSERT_TRUE( load( "expect led 30 on 100\nexpect led 31 off 100\nexpect pad 5 12 100\nexpect pad 6 off 100\nquit 3\n" ) );
+    EXPECT_EQ( sim::ScriptPlayer::State::Done, run() ) << player->failure();
+    EXPECT_EQ( 3, player->exitCode() );
+}
+
+TEST_F( Sim, ExpectLedFailsWhenTheTableNeverMatches )
+{
+    ASSERT_TRUE( load( "expect led 30 on 50\n" ) );
+    EXPECT_EQ( sim::ScriptPlayer::State::Failed, run() );
+    EXPECT_NE( std::string::npos, player->failure().find( "line 1" ) ) << player->failure();
+
+    uart.injectRx( fromHost( contract::PKT_PAD, contract::PAD_SET_SINGLE_PAD, { 0, contract::STATE_ON, 3 } ) );
+    ASSERT_TRUE( load( "expect pad 1 4 50\n" ) );
+    EXPECT_EQ( sim::ScriptPlayer::State::Failed, run() );
+}
+
+TEST_F( Sim, ExpectLedAndExpectPadRejectBadLines )
+{
+    EXPECT_FALSE( load( "expect led 30\n" ) );
+    EXPECT_FALSE( load( "expect led 30 dim\n" ) );
+    EXPECT_FALSE( load( "expect led 200 on\n" ) );
+    EXPECT_FALSE( load( "expect led Nonsense Key on\n" ) );
+    EXPECT_FALSE( load( "expect pad 0 3\n" ) );
+    EXPECT_FALSE( load( "expect pad 17 3\n" ) );
+    EXPECT_FALSE( load( "expect pad 1 18\n" ) );
+    EXPECT_FALSE( load( "expect pad 1\n" ) );
+    EXPECT_FALSE( load( "expect pad 1 3 -5\n" ) );
+    EXPECT_TRUE( load( "expect pad 16 off\nexpect led 0 off 10\n" ) );
 }
