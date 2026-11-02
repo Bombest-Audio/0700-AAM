@@ -6,9 +6,15 @@
 #   emu/run.sh --root DIR           emulated device root (default ~/KickEmu)
 #   emu/run.sh --no-surface         Kick only (set KICK_SERIAL_PORT yourself)
 #   emu/run.sh --tcp PORT           Surface listens on TCP instead of opening a pty; Kick connects to it
+#   emu/run.sh --camera             also start kick-camera (test pattern, camera off until "enable")
+#   emu/run.sh --camera-enable      like --camera, and open the camera right away
+#   emu/run.sh --camera-only        start only kick-camera, in the foreground (no Kick, no Surface)
 #
 # Environment: KICK_EMU_ROOT, KICK_EMU_CONTROL_PORT (50901), KICK_EMU_EVENT_PORT (50902),
 # KICK_AUDIO_DEVICE (CoreAudio device name; default system output).
+# Camera: KICK_CAMERA_SOURCE = pattern (default) | webcam (emu/tools/camera-webcam.sh) | file (KICK_CAMERA_FILE, raw
+# YUYV 320x240 or Y4M). The service socket is $KICK_EMU_ROOT/run/kick-camera.sock and the frames are in shared
+# memory /kick-camera; both are exported as KICK_CAMERA_SOCKET and KICK_CAMERA_SHM.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -29,6 +35,9 @@ done
 SCRIPT=""
 USE_SURFACE=1
 TCP_PORT=""
+CAMERA=0
+CAMERA_ENABLE=0
+CAMERA_ONLY=0
 export KICK_EMU_ROOT="${KICK_EMU_ROOT:-$HOME/KickEmu}"
 
 while [[ $# -gt 0 ]]; do
@@ -37,21 +46,69 @@ while [[ $# -gt 0 ]]; do
         --root) export KICK_EMU_ROOT="$2"; shift ;;
         --no-surface) USE_SURFACE=0 ;;
         --tcp) TCP_PORT="$2"; shift ;;
+        --camera) CAMERA=1 ;;
+        --camera-enable) CAMERA=1; CAMERA_ENABLE=1 ;;
+        --camera-only) CAMERA=1; CAMERA_ONLY=1 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
     shift
 done
 
-[[ -x "$KICK_BIN" && -n "$SURFACE_BIN" ]] || { echo "not built yet: run emu/build.sh" >&2; exit 1; }
+if [[ "$CAMERA_ONLY" == 0 ]]; then
+    [[ -x "$KICK_BIN" && -n "$SURFACE_BIN" ]] || { echo "not built yet: run emu/build.sh" >&2; exit 1; }
+fi
 
 mkdir -p "$KICK_EMU_ROOT"
-[[ -d "$KICK_EMU_ROOT/data/sounds/Emu Kit" ]] || python3 "$REPO/emu/tools/make_samples.py" "$KICK_EMU_ROOT"
+[[ "$CAMERA_ONLY" == 1 || -d "$KICK_EMU_ROOT/data/sounds/Emu Kit" ]] || python3 "$REPO/emu/tools/make_samples.py" "$KICK_EMU_ROOT"
 
 PIDS=()
 cleanup() {
     for pid in "${PIDS[@]:-}"; do kill "$pid" 2>/dev/null || true; done
 }
 trap cleanup EXIT INT TERM
+
+# kick-camera: the camera capture service from Kick/services/kick_camera, on the host instead of the unit.
+# It builds in a few seconds (plain C++, no JUCE) into $OUT/camera.
+start_camera() {
+    export KICK_CAMERA_SOCKET="$KICK_EMU_ROOT/run/kick-camera.sock"
+    export KICK_CAMERA_SHM="/kick-camera"
+    mkdir -p "$KICK_EMU_ROOT/run"
+    local bin="$REPO/$OUT/camera/kick-camera"
+    if [[ ! -x "$bin" ]]; then
+        cmake -S "$REPO/Kick/services/kick_camera" -B "$REPO/$OUT/camera" -DKICK_CAMERA_BUILD_TESTS=OFF >/dev/null
+        cmake --build "$REPO/$OUT/camera" >/dev/null
+    fi
+    local args=(--socket "$KICK_CAMERA_SOCKET" --shm "$KICK_CAMERA_SHM")
+    case "${KICK_CAMERA_SOURCE:-pattern}" in
+        pattern) args+=(--source pattern) ;;
+        file) args+=(--source file --file "${KICK_CAMERA_FILE:?set KICK_CAMERA_FILE for KICK_CAMERA_SOURCE=file}") ;;
+        webcam) args=("$REPO/emu/tools/camera-webcam.sh" "--" "${args[@]}") ;;
+        *) echo "unknown KICK_CAMERA_SOURCE: ${KICK_CAMERA_SOURCE}" >&2; exit 2 ;;
+    esac
+    [[ "$CAMERA_ENABLE" == 1 ]] && args+=(--enable)
+    if [[ "${KICK_CAMERA_SOURCE:-pattern}" == webcam ]]; then
+        "${args[@]}" >"$KICK_EMU_ROOT/camera.log" 2>&1 &
+    else
+        "$bin" "${args[@]}" >"$KICK_EMU_ROOT/camera.log" 2>&1 &
+    fi
+    CAMERA_PID=$!
+    PIDS+=("$CAMERA_PID")
+    for _ in $(seq 1 50); do
+        [[ -S "$KICK_CAMERA_SOCKET" ]] && break
+        kill -0 "$CAMERA_PID" 2>/dev/null || { cat "$KICK_EMU_ROOT/camera.log" >&2; exit 1; }
+        sleep 0.1
+    done
+    echo "kick-camera pid $CAMERA_PID, socket $KICK_CAMERA_SOCKET, log $KICK_EMU_ROOT/camera.log (camera is off until: kick-camera --socket '$KICK_CAMERA_SOCKET' --ctl enable)"
+}
+
+if [[ "$CAMERA" == 1 ]]; then
+    rm -f "$KICK_EMU_ROOT/run/kick-camera.sock"
+    start_camera
+    if [[ "$CAMERA_ONLY" == 1 ]]; then
+        wait "$CAMERA_PID" || true
+        exit 0
+    fi
+fi
 
 if [[ "$USE_SURFACE" == 1 ]]; then
     rm -f "$KICK_EMU_ROOT/dev/ttymxc0" "$KICK_EMU_ROOT/surface.port"
