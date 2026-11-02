@@ -242,6 +242,12 @@ namespace kick_ui
             DBG( "SwUtility - Handle Command Enter" );
 #endif
 
+            if( f_hwMsg.data.empty() )
+            {
+                DBG( "Software update message without a payload, ignored" );
+                return;
+            }
+
             if( f_hwMsg.data[0] == 1 )
             {
                 flag = mt::MCUUpdateAction::EN_SW_UPDATE_BEGIN_TRANSFER;

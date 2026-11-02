@@ -1487,8 +1487,23 @@ namespace
                 case PktLed:
                     if( f.cmd == LedSingle || f.cmd == LedBlink )
                     {
-                        if( juce::isPositiveAndBelow( d( 0 ), numButtons ) )
-                            model.leds[(size_t)d( 0 )] = f.cmd == LedBlink ? StateOnBlink : d( 1 );
+                        const int id = d( 0 );
+                        if( juce::isPositiveAndBelow( id, numButtons ) )
+                        {
+                            // The app only ever lights banks 0-7, Stop/Play (44/45) and Full/Half Level
+                            // (48/49), it never sends the matching off. So lighting one has to clear the
+                            // rest of its group, as the panel does.
+                            const int newState = f.cmd == LedBlink ? StateOnBlink : d( 1 );
+                            if( newState != StateOff )
+                            {
+                                const int first = id <= 7 ? 0 : ( id == 44 || id == 45 ) ? 44 : ( id == 48 || id == 49 ) ? 48 : -1;
+                                const int last  = id <= 7 ? 7 : ( id == 44 || id == 45 ) ? 45 : ( id == 48 || id == 49 ) ? 49 : -1;
+                                for( int other = first; first >= 0 && other <= last; ++other )
+                                    if( other != id )
+                                        model.leds[(size_t)other] = StateOff;
+                            }
+                            model.leds[(size_t)id] = newState;
+                        }
                     }
                     else if( f.cmd == LedAll )
                         model.leds.fill( d( 0 ) );
