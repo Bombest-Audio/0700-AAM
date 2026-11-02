@@ -121,8 +121,8 @@ public:
         const uint16_t& f_ui16ByteTimeoutMs ///< Timeout for reception of one byte
     )
         : m_enComChannel( f_enComChannel )
-        , mc_ui8RxFifoSize( f_ui8RxFifoSize )
-        , mc_ui8TxFifoSize( f_ui8TxFifoSize )
+        , mc_ui8RxFifoSize( f_ui8RxFifoSize > 255 ? 255 : (uint8_t)f_ui8RxFifoSize )
+        , mc_ui8TxFifoSize( f_ui8TxFifoSize > 255 ? 255 : (uint8_t)f_ui8TxFifoSize )
         , m_ptrui8RxFifo( f_ptrui8RxFifo )
         , m_ptrui8TxFifo( f_ptrui8TxFifo )
     {}

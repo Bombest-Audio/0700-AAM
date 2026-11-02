@@ -20,7 +20,8 @@ TEST( KickButtons, ClickFiresOnClick )
 
     b.triggerClick();
     b.triggerClick();
-    kicktest::pump(); // triggerClick posts a command message
+    // triggerClick posts a command message, so wait for both to land.
+    EXPECT_TRUE( kicktest::pumpUntil( [&] { return clicks == 2; } ) );
     EXPECT_EQ( clicks, 2 );
 }
 
@@ -32,11 +33,9 @@ TEST( KickButtons, ToggleButtonKeepsStateBetweenClicks )
     EXPECT_FALSE( b.getToggleState() );
 
     b.triggerClick();
-    kicktest::pump();
-    EXPECT_TRUE( b.getToggleState() );
+    EXPECT_TRUE( kicktest::pumpUntil( [&] { return b.getToggleState(); } ) );
     b.triggerClick();
-    kicktest::pump();
-    EXPECT_FALSE( b.getToggleState() );
+    EXPECT_TRUE( kicktest::pumpUntil( [&] { return !b.getToggleState(); } ) );
 }
 
 TEST( KickButtons, ToggleButtonSwapsLabelWithState )
@@ -46,11 +45,9 @@ TEST( KickButtons, ToggleButtonSwapsLabelWithState )
     b.setClickingTogglesState( true );
     EXPECT_EQ( b.getButtonText(), "OFF" );
     b.triggerClick();
-    kicktest::pump();
-    EXPECT_EQ( b.getButtonText(), "ON" );
+    EXPECT_TRUE( kicktest::pumpUntil( [&] { return b.getButtonText() == "ON"; } ) );
     b.triggerClick();
-    kicktest::pump();
-    EXPECT_EQ( b.getButtonText(), "OFF" );
+    EXPECT_TRUE( kicktest::pumpUntil( [&] { return b.getButtonText() == "OFF"; } ) );
 }
 
 TEST( KickButtons, NormalizedValueMapsToToggleState )
@@ -65,19 +62,16 @@ TEST( KickButtons, NormalizedValueMapsToToggleState )
     EXPECT_FLOAT_EQ( c.getNormalized(), 0.0f );
 }
 
-TEST( KickButtons, MouseClickInsideBoundsTriggersButton )
+TEST( KickButtons, SyntheticMouseDownUpLeavesButtonReleased )
 {
+    // The click itself comes from the Button base class' mouse handling, which needs a
+    // live peer, so this only covers KickButton's own down/up bookkeeping.
     ui::KickButton b( "go", "Go" );
     b.setBounds( 0, 0, 80, 30 );
-    int clicks = 0;
-    b.onClick = [&] { ++clicks; };
 
     Mouse m( b );
     m.down( { 10.f, 10.f } );
     m.up( { 10.f, 10.f } );
-    // KickButton arms a timer on mouseDown; the click itself comes from the Button base
-    // class' own mouse handling, which needs a live peer. Assert no crash and sane state.
-    EXPECT_GE( clicks, 0 );
     EXPECT_FALSE( b.isDown() );
 }
 
@@ -238,21 +232,20 @@ TEST( KickToggleOptions, ReplacingOptionsKeepsSelectionInRange )
 
 namespace
 {
-    // Count the pixels that differ from the meter's idle appearance.
-    int litPixels( ui::KickLevelMeter& m, float dB )
+    constexpr float kSilence = -100.f;
+
+    void setAll( ui::KickLevelMeter& m, float dB )
     {
         m.setSignalStrength( dB, dB, dB, dB );
-        auto img = kicktest::snapshot( m );
-        m.setSignalStrength( -100.f, -100.f, -100.f, -100.f );
-        auto idle = kicktest::snapshot( m );
-        m.setSignalStrength( dB, dB, dB, dB );
+    }
 
-        int diff = 0;
-        for( int y = 0; y < img.getHeight(); ++y )
-            for( int x = 0; x < img.getWidth(); ++x )
-                if( img.getPixelAt( x, y ) != idle.getPixelAt( x, y ) )
-                    ++diff;
-        return diff;
+    // Count the pixels that differ from the meter's silent appearance.
+    int litPixels( ui::KickLevelMeter& m, float dB )
+    {
+        setAll( m, kSilence );
+        auto silent = kicktest::snapshot( m );
+        setAll( m, dB );
+        return kicktest::differingPixels( kicktest::snapshot( m ), silent );
     }
 }
 
@@ -269,15 +262,23 @@ TEST( KickLevelMeter, LouderSignalLightsMorePixels )
     EXPECT_GT( loud, mid );
 }
 
-TEST( KickLevelMeter, SilenceMatchesIdle )
+TEST( KickLevelMeter, SilenceMatchesAFreshMeter )
 {
-    ui::KickLevelMeter m( ui::KickLevelMeter::Style::Vertical );
-    m.setBounds( 0, 0, 40, 240 );
-    m.setRange( -100.0, 0.0 );
-    EXPECT_EQ( litPixels( m, -100.f ), 0 );
+    // A meter driven to silence must look like one that never received a signal.
+    ui::KickLevelMeter fresh( ui::KickLevelMeter::Style::Vertical );
+    ui::KickLevelMeter driven( ui::KickLevelMeter::Style::Vertical );
+    for( auto* m : { &fresh, &driven } )
+    {
+        m->setBounds( 0, 0, 40, 240 );
+        m->setRange( -100.0, 0.0 );
+    }
+    setAll( driven, 0.f );
+    setAll( driven, kSilence );
+
+    EXPECT_EQ( kicktest::differingPixels( kicktest::snapshot( driven ), kicktest::snapshot( fresh ) ), 0 );
 }
 
-TEST( KickLevelMeter, AcceptsVectorFormAndEveryStyle )
+TEST( KickLevelMeter, EveryStyleRespondsToTheVectorForm )
 {
     using S = ui::KickLevelMeter::Style;
     for( auto style : { S::Vertical, S::Horizantal, S::VerticalWithoutMarks, S::HorizantalWithMarks, S::VerticalWithMarks } )
@@ -285,9 +286,10 @@ TEST( KickLevelMeter, AcceptsVectorFormAndEveryStyle )
         ui::KickLevelMeter m( style );
         m.setBounds( 0, 0, 120, 120 );
         m.setRange( -60.0, 6.0 );
-        m.setSignalStrength( std::vector<float>{ -12.f, -9.f } );
-        auto img = kicktest::snapshot( m );
-        EXPECT_EQ( img.getWidth(), 120 ) << "style " << static_cast<int>( style );
+        m.setSignalStrength( std::vector<float>{ -60.f, -60.f } );
+        auto silent = kicktest::snapshot( m );
+        m.setSignalStrength( std::vector<float>{ 0.f, 0.f } );
+        EXPECT_GT( kicktest::differingPixels( kicktest::snapshot( m ), silent ), 0 ) << "style " << static_cast<int>( style );
     }
 }
 

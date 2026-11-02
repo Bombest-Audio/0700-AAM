@@ -1,9 +1,23 @@
-# Applies the patches Kick needs to a fresh JUCE 7.0.12 checkout. Idempotent via a flag file.
+# Applies the patches Kick needs to a fresh JUCE 7.0.12 checkout.
 #   cmake -DJUCE_DIR=<dir> -DKICK_ROOT=<repo> -DTESTS_UI=<tests/ui> -P apply_juce_patches.cmake
+#
+# Every patch is mandatory: a half-patched JUCE can compile and misbehave, so any
+# failure stops configuration. The flag file is written only after all patches land.
 set(flag "${JUCE_DIR}/.kick_patches_applied")
 if(EXISTS "${flag}")
     return()
 endif()
+
+function(kick_apply_patch patch)
+    execute_process(
+        COMMAND git apply --ignore-whitespace "${patch}"
+        WORKING_DIRECTORY "${JUCE_DIR}"
+        RESULT_VARIABLE rc
+        ERROR_VARIABLE err)
+    if(rc)
+        message(FATAL_ERROR "Failed to apply ${patch} to JUCE in ${JUCE_DIR}:\n${err}")
+    endif()
+endfunction()
 
 set(patches "${KICK_ROOT}/Kick/patches/juce_multitouch_7.0.12.patch")
 if(APPLE)
@@ -12,18 +26,6 @@ if(APPLE)
 endif()
 
 foreach(p IN LISTS patches)
-    execute_process(COMMAND git apply --ignore-whitespace "${p}" WORKING_DIRECTORY "${JUCE_DIR}" RESULT_VARIABLE rc ERROR_VARIABLE err)
-    if(rc)
-        # Fall back to patch(1) with fuzz, which tolerates context drift.
-        execute_process(COMMAND patch -p1 -F3 -i "${p}" WORKING_DIRECTORY "${JUCE_DIR}" RESULT_VARIABLE rc2 OUTPUT_VARIABLE out2 ERROR_VARIABLE err2)
-        if(rc2)
-            if(p MATCHES "macos15_sdk")
-                # Only needed on the newest SDKs; older ones still have the API.
-                message(WARNING "Skipping ${p}: ${err} ${out2} ${err2}")
-            else()
-                message(FATAL_ERROR "Failed to apply ${p} to JUCE: ${err} ${out2} ${err2}")
-            endif()
-        endif()
-    endif()
+    kick_apply_patch("${p}")
 endforeach()
 file(WRITE "${flag}" "patched")

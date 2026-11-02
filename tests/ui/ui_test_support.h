@@ -12,6 +12,17 @@ namespace kicktest
         juce::MessageManager::getInstance()->runDispatchLoopUntil( ms );
     }
 
+    // Run the message loop until pred() holds or timeoutMs passes. Prefer this over a
+    // fixed pump: it returns as soon as the work lands and tolerates a loaded CI runner.
+    template<typename Pred>
+    bool pumpUntil( Pred pred, int timeoutMs = 2000 )
+    {
+        const auto deadline = juce::Time::getMillisecondCounter() + (juce::uint32)timeoutMs;
+        while( !pred() && juce::Time::getMillisecondCounter() < deadline )
+            pump( 10 );
+        return pred();
+    }
+
     inline juce::MouseEvent makeMouse( juce::Component& c, juce::Point<float> pos, bool down, int clicks = 1, bool dragged = false )
     {
         auto source = juce::Desktop::getInstance().getMainMouseSource();
@@ -40,6 +51,17 @@ namespace kicktest
     inline juce::Image snapshot( juce::Component& c )
     {
         return c.createComponentSnapshot( c.getLocalBounds(), true, 1.0f );
+    }
+
+    // Number of pixels that differ between two same-sized snapshots.
+    inline int differingPixels( const juce::Image& a, const juce::Image& b )
+    {
+        int diff = 0;
+        for( int y = 0; y < a.getHeight(); ++y )
+            for( int x = 0; x < a.getWidth(); ++x )
+                if( a.getPixelAt( x, y ) != b.getPixelAt( x, y ) )
+                    ++diff;
+        return diff;
     }
 
     inline int countPixels( const juce::Image& img, juce::Colour target, int tolerance = 8 )

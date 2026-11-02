@@ -18,6 +18,8 @@ void CPktMgr::Init( void )
     m_boFrameRcvComplete = FALSE;
     m_enPktDir           = EN_PKT_REQUEST;
     m_rxCrcBytes.clear();
+    // Allocate once here so the receive path never allocates (ISR/driver context on the MCU).
+    m_rxCrcBytes.reserve( (size_t)mc_ui8RxFifoSize + 6 );
 
 #ifdef PKT_HEADER_AVAILABLE
     m_enFrmState = EN_FRM_STATE_INIT_1;
@@ -45,7 +47,9 @@ void CPktMgr::PushByteToRxFifo( uint8_t f_ui8Data )
     {
         case EN_FRM_STATE_INIT_1:
             // Line noise before the start byte is skipped, not folded into the CRC.
-            if( f_ui8Data == 'M' )
+            // While a complete frame awaits the consumer, a new frame is ignored whole so
+            // it cannot overwrite the pending frame's header or payload.
+            if( f_ui8Data == 'M' && !m_boFrameRcvComplete )
             {
                 rxBytes.clear();
                 rxBytes.push_back( f_ui8Data );
@@ -82,9 +86,7 @@ void CPktMgr::PushByteToRxFifo( uint8_t f_ui8Data )
             break;
         case EN_FRM_STATE_SIZE:
             rxBytes.push_back( f_ui8Data );
-            m_ui8FrameSize      = f_ui8Data;
-            m_ui8RxFifoWritePos = 0;
-            m_ui8RxFifoReadPos  = 0;
+            m_ui8FrameSize = f_ui8Data;
             if( m_ui8FrameSize > mc_ui8RxFifoSize + PKTMGR_CRC_BYTE )
             {
                 // Payload would overrun the RX FIFO: drop the frame and resync.
@@ -93,6 +95,9 @@ void CPktMgr::PushByteToRxFifo( uint8_t f_ui8Data )
             }
             else
             {
+                // INIT_1 admits a frame only when none is pending, so the FIFO is free.
+                m_ui8RxFifoWritePos = 0;
+                m_ui8RxFifoReadPos  = 0;
                 // The size byte counts payload plus the CRC byte, so 0 or 1 means no payload.
                 m_enFrmState = ( m_ui8FrameSize <= PKTMGR_CRC_BYTE ) ? EN_FRM_STATE_CRC : EN_FRM_STATE_DATA;
             }
@@ -139,10 +144,10 @@ void CPktMgr::PushUint8ToTxFifo( uint8_t f_ui8Data )
 uint8_t CPktMgr::CrcGen( std::vector<char>& f_txData )
 {
     uint8_t ui8CrcValue = 0xff;
-    uint8_t i, j;
-    uint8_t len = f_txData.size();
+    uint8_t j;
+    const size_t len = f_txData.size();
 
-    for( i = 0; i < len; i++ )
+    for( size_t i = 0; i < len; i++ )
     {
         ui8CrcValue ^= f_txData[i];
         for( j = 0; j < 8; j++ )
